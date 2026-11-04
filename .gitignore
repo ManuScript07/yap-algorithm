@@ -1,0 +1,20 @@
+.env
+.env.*
+!.env.example
+.cache/
+.local/
+output/
+*.exe
+__pycache__/
+.venv/
+.pytest_cache/
+supabase/.temp/
+# Local knowledge graph, planning and validation reports are not published.
+graphify-out/
+docs/
+reports/
+*.log
+*.pem
+*.key
+*.p12
+*.pfx

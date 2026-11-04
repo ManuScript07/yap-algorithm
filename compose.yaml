@@ -1,0 +1,18 @@
+services:
+  db:
+    image: public.ecr.aws/supabase/postgres:17.6.1.158
+    container_name: yap_algorithm_db
+    environment:
+      POSTGRES_PASSWORD: yap-local-only
+      POSTGRES_DB: yap_algorithm
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - yap_algorithm_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "supabase_admin", "-d", "yap_algorithm"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  yap_algorithm_data:
