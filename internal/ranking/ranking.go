@@ -14,6 +14,7 @@ var FeatureNames = []string{"semantic", "social", "quality", "freshness", "negat
 
 type Candidate struct {
 	ID, AuthorID                string
+	PostVersion                 int
 	CreatedAt                   time.Time
 	Embedding                   []float64
 	Sources                     []string

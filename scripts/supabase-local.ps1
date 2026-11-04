@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('setup', 'worker')][string]$Action,
     [string]$AppRoot,
     [ValidateRange(1, 8)][int]$Concurrency = 2,
-    [switch]$Once
+    [switch]$Once,
+    [switch]$RetryFailed
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
@@ -66,6 +67,7 @@ try {
     $env:GOCACHE = Join-Path $serviceRoot '.cache/go-build'
     $arguments = @('run', './cmd/worker', '-concurrency', $Concurrency)
     if ($Once) { $arguments += '-once' }
+    if ($RetryFailed) { $arguments += '-retry-failed' }
     & go @arguments
     if ($LASTEXITCODE -ne 0) { throw 'The worker exited with an error.' }
 } finally {

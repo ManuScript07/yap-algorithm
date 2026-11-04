@@ -1,0 +1,270 @@
+openapi: 3.1.0
+info:
+  title: YapChat Supabase personalized feed
+  version: 1.0.0
+  description: >-
+    Internal worker has no client listener. Use these RPCs through the existing
+    Supabase SDK and account session. UUIDs and versions must survive network
+    retries. Serialize settings mutations; post actions additionally enforce
+    optimistic action_version. Internal vectors and scores are never returned.
+servers:
+  - url: http://127.0.0.1:54321
+security:
+  - apiKey: []
+    bearer: []
+paths:
+  /rest/v1/rpc/get_for_you_feed:
+    post:
+      operationId: getForYouFeed
+      description: >-
+        First page omits requested_session and uses after_position=-1. Continue
+        with next_cursor values. A session's order is immutable; current access
+        is rechecked on every page. After a reset/expiry start a new session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requested_session: {type: [string, 'null'], format: uuid, default: null}
+                after_position: {type: integer, minimum: -1, maximum: 199, default: -1}
+                requested_limit: {type: integer, minimum: 1, maximum: 30, default: 20}
+      responses:
+        '200':
+          description: Visible page, including fallback while the worker is unavailable.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedPage'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/record_feed_events:
+    post:
+      operationId: recordFeedEvents
+      description: >-
+        Send impression before dwell/open_post. Each impression needs at least
+        1000ms and 50% visibility; server elapsed time must also allow it. Dwell
+        active_ms is cumulative for a delivery, capped at 120000, not a delta.
+        Store event_id and the unchanged body until acknowledgement. Stale
+        epochs/text versions and expired owned deliveries are ignored. Unknown
+        or foreign deliveries are validation errors and roll back the batch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_events]
+              additionalProperties: false
+              properties:
+                requested_events:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: {$ref: '#/components/schemas/Event'}
+      responses:
+        '200':
+          description: Counts of accepted, duplicate and stale events, and current user revision.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, duplicates, stale, revision]
+                properties:
+                  accepted: {type: integer}
+                  duplicates: {type: integer}
+                  stale: {type: integer}
+                  revision: {type: integer, format: int64}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/apply_feed_action:
+    post:
+      operationId: applyFeedAction
+      description: >-
+        Use delivery_id from a served post and expected_version=post.action_version.
+        New user intent gets a new requested_id. A transport retry reuses the
+        exact original ID/body/version. A 409 version conflict needs reconciliation
+        with current server state; never replay an older intent with a newer version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requested_id, requested_delivery, requested_action, expected_version]
+              properties:
+                requested_id: {type: string, format: uuid}
+                requested_delivery: {type: string, format: uuid}
+                requested_action: {type: string, enum: [like, unlike, less_similar, undo_less_similar]}
+                expected_version: {type: integer, format: int64, minimum: 0}
+      responses:
+        '200':
+          description: Action result; ignore replies older than the cached action_version.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResult'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/set_recommendation_author_hidden:
+    post:
+      operationId: setRecommendationAuthorHidden
+      description: Hiding applies to recommendations only; it is separate from a user block.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requested_id, requested_author, requested_hidden]
+              properties:
+                requested_id: {type: string, format: uuid}
+                requested_author: {type: string, format: uuid}
+                requested_hidden: {type: boolean}
+      responses:
+        '200': {description: 'request_id, changed, hidden, replayed and user revision.'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/reset_recommendation_interests:
+    post:
+      operationId: resetRecommendationInterests
+      description: >-
+        Advances the interest epoch, invalidating old sessions and delayed
+        telemetry. Preserves explicit hidden authors, blocks and visible likes.
+        Retry with the same requested_id to avoid performing another reset.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_id]
+              additionalProperties: false
+              properties:
+                requested_id: {type: string, format: uuid}
+      responses:
+        '200': {description: 'request_id, epoch, revision and replayed.'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/get_recommendation_hidden_authors:
+    post:
+      operationId: getRecommendationHiddenAuthors
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                after_author: {type: [string, 'null'], format: uuid, default: null}
+                requested_limit: {type: integer, minimum: 1, maximum: 100, default: 30}
+      responses:
+        '200':
+          description: Keyset page of the caller's explicitly hidden author IDs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [author_ids, next_cursor]
+                properties:
+                  author_ids: {type: array, items: {type: string, format: uuid}}
+                  next_cursor: {type: [string, 'null'], format: uuid}
+        default: {$ref: '#/components/responses/RPCError'}
+components:
+  securitySchemes:
+    apiKey: {type: apiKey, in: header, name: apikey}
+    bearer: {type: http, scheme: bearer, bearerFormat: JWT}
+  responses:
+    RPCError:
+      description: >-
+        PostgREST error object: code/message/details/hint. PT409 with
+        feed_action_version_conflict requires state reconciliation; PT409
+        feed_session_invalidated and PT410 feed_session_expired require a new
+        session; PT404 is an unknown/foreign session. 23505 means request/event
+        ID reused with different data. 22023 covers invalid/expired deliveries
+        and malformed telemetry. 42901 is the application's quota error code
+        (do not rely on HTTP 429). Existing account-ban/deletion errors retain
+        their shared YapChat contract. Network/503 errors preserve the last
+        permitted cache; they do not by themselves mean logout.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code, message]
+            properties:
+              code: {type: string}
+              message: {type: string}
+              details: {type: [string, 'null']}
+              hint: {type: [string, 'null']}
+  schemas:
+    Post:
+      type: object
+      required: [id, author_id, text, audience, language, version, action_version, liked, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        author_id: {type: string, format: uuid}
+        text: {type: string, maxLength: 1000}
+        audience: {type: string, enum: [public, friends]}
+        language: {type: string, enum: [ru, en]}
+        version: {type: integer, minimum: 1, description: Content version, distinct from action_version.}
+        action_version: {type: integer, format: int64, minimum: 0}
+        liked: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    FeedPage:
+      type: object
+      required: [contract_version, session_id, items, next_cursor, has_more, expires_at, model, refresh]
+      properties:
+        contract_version: {type: integer, const: 1}
+        session_id: {type: string, format: uuid}
+        items:
+          type: array
+          maxItems: 30
+          items:
+            type: object
+            required: [position, delivery_id, delivery_expires_at, post, reasons]
+            properties:
+              position: {type: integer, minimum: 0, maximum: 199}
+              delivery_id: {type: string, format: uuid}
+              delivery_expires_at: {type: string, format: date-time}
+              post: {$ref: '#/components/schemas/Post'}
+              reasons: {type: array, items: {type: string}, description: Stable reason IDs; ignore unfamiliar IDs.}
+        next_cursor:
+          oneOf:
+            - {type: 'null'}
+            - type: object
+              required: [session_id, after_position]
+              properties:
+                session_id: {type: string, format: uuid}
+                after_position: {type: integer, minimum: 0, maximum: 199}
+        has_more: {type: boolean}
+        expires_at: {type: string, format: date-time}
+        model: {type: string, description: fallback-v1 or personalized-v1; allow future versions.}
+        refresh:
+          type: object
+          required: [status, revision, processed_revision, prepared_at]
+          properties:
+            status: {type: string, enum: [fresh, queued, retrying, failed]}
+            revision: {type: integer, format: int64}
+            processed_revision: {type: integer, format: int64}
+            prepared_at: {type: [string, 'null'], format: date-time}
+    Event:
+      type: object
+      additionalProperties: false
+      required: [event_id, delivery_id, kind]
+      properties:
+        event_id: {type: string, format: uuid}
+        delivery_id: {type: string, format: uuid}
+        kind: {type: string, enum: [impression, dwell, open_post]}
+        visible_ms: {type: integer, minimum: 1000, maximum: 120000}
+        visible_fraction: {type: number, minimum: 0.5, maximum: 1}
+        active_ms: {type: integer, minimum: 0, maximum: 120000}
+    ActionResult:
+      type: object
+      required: [request_id, changed, replayed, revision, action_version, liked, less_similar]
+      properties:
+        request_id: {type: string, format: uuid}
+        changed: {type: boolean}
+        replayed: {type: boolean}
+        revision: {type: integer, format: int64}
+        action_version: {type: integer, format: int64}
+        liked: {type: boolean}
+        less_similar: {type: boolean}

@@ -92,6 +92,19 @@ func sbErrorCode(t *testing.T, err error, code string) {
 }
 func sbVector() []float64 { v := make([]float64, domain.Dimensions); v[0] = 1; return v }
 
+func sbWorkerCommand(workerDSN string) *exec.Cmd {
+	cmd := exec.Command("go", "run", "./cmd/worker", "-once", "-concurrency", "2")
+	cmd.Dir = ".."
+	for _, entry := range os.Environ() {
+		name := strings.SplitN(entry, "=", 2)[0]
+		if !strings.HasPrefix(name, "YAP_SUPABASE_") && name != "DATABASE_URL" && name != "MODEL_URL" {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, "DATABASE_URL="+workerDSN, "MODEL_URL=http://127.0.0.1:8091")
+	return cmd
+}
+
 type sbEncoder struct{ calls atomic.Int32 }
 
 func (e *sbEncoder) Encode(context.Context, string) ([]float64, error) {
@@ -329,7 +342,7 @@ func TestSupabaseLocalPipeline(t *testing.T) {
 	})
 	t.Run("quota_and_worker_privileges", func(t *testing.T) {
 		f := sbUsers(t, admin)
-		for i := 0; i < 6; i++ {
+		for i := 0; i < 12; i++ {
 			f.create(t, fmt.Sprint("post ", i), "public")
 		}
 		_, err := f.rpc(f.author, "select public.create_feed_post($1,'too many','public','ru')", domain.UUID())
@@ -342,9 +355,21 @@ func TestSupabaseLocalPipeline(t *testing.T) {
 		}
 		_, err = f.rpc(f.stranger, "select public.create_feed_post($1,'idempotent','public','ru')", duplicateID)
 		sbErrorCode(t, err, "42901")
-		sbExec(t, admin, "update private.feed_operation_limits set request_count=1,window_started_at=statement_timestamp()-interval '2 minutes',day_count=100 where user_id=$1 and operation='post_create'", f.author)
-		_, err = f.rpc(f.author, "select public.create_feed_post($1,'daily limit','public','ru')", domain.UUID())
+		// Counts are based on actual publications over a sliding hour, even if
+		// a post is soft-deleted. A fixed minute/day counter cannot reset it.
+		var oldest string
+		if err := admin.QueryRow(ctx, "select id::text from feed.posts where author_id=$1 order by created_at,id limit 1", f.author).Scan(&oldest); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.rpc(f.author, "select public.delete_feed_post($1)", oldest); err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.rpc(f.author, "select public.create_feed_post($1,'delete bypass','public','ru')", domain.UUID())
 		sbErrorCode(t, err, "42901")
+		sbExec(t, admin, "update feed.posts set created_at=statement_timestamp()-interval '61 minutes'where id=$1", oldest)
+		if _, err := f.rpc(f.author, "select public.create_feed_post($1,'hour slot released','public','ru')", domain.UUID()); err != nil {
+			t.Fatal(err)
+		}
 		for _, query := range []string{"select * from feed.posts", "update feed.posts set text='worker overwrite'", "select * from public.profiles", "select * from recsys.post_embeddings"} {
 			_, err := workerPool.Exec(ctx, query)
 			sbErrorCode(t, err, "42501")
@@ -479,6 +504,7 @@ select extensions.gen_random_uuid(),$1,'Technical queue load sample '||n,'public
 		t.Logf("500 SQL RPC reads, 12 users, 16 parallel: %s; p95=%s p99=%s (excludes Auth/PostgREST network and recommendation serving)", readDuration, values[474], values[494])
 	})
 	t.Run("actual_auth_and_postgrest", func(t *testing.T) { sbREST(t, admin, u.String()) })
+	t.Run("personalized_feed", func(t *testing.T) { sbRecommendations(t, admin, repo, workerPool) })
 }
 
 func sbREST(t *testing.T, admin *pgxpool.Pool, workerDSN string) {
@@ -536,9 +562,7 @@ func sbREST(t *testing.T, admin *pgxpool.Pool, workerDSN string) {
 		t.Fatalf("real RPC create: status %d", status)
 	}
 	if os.Getenv("YAP_SUPABASE_MODEL_TEST") == "1" {
-		cmd := exec.Command("go", "run", "./cmd/worker", "-once", "-concurrency", "2")
-		cmd.Dir = ".."
-		cmd.Env = append(os.Environ(), "DATABASE_URL="+workerDSN, "MODEL_URL=http://127.0.0.1:8091")
+		cmd := sbWorkerCommand(workerDSN)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("real worker command: %v\n%s", err, output)
 		}
@@ -554,5 +578,71 @@ func sbREST(t *testing.T, admin *pgxpool.Pool, workerDSN string) {
 	}
 	if status := request("/rest/v1/rpc/get_feed_post", anon, anon, map[string]string{"requested_id": id}, nil); status != 401 && status != 403 {
 		t.Fatalf("anonymous access: status %d", status)
+	}
+	// A second real Auth user exercises the future client's exact feed/action
+	// contract. This is separate from SQL identity emulation used by other tests.
+	readerEmail := "reader-" + domain.UUID() + "@example.com"
+	readerPassword := domain.UUID()
+	var reader struct {
+		ID string `json:"id"`
+	}
+	if status := request("/auth/v1/admin/users", service, service, map[string]any{"email": readerEmail, "password": readerPassword, "email_confirm": true}, &reader); status != 200 || reader.ID == "" {
+		t.Fatalf("reader Auth setup: %d", status)
+	}
+	t.Cleanup(func() {
+		sbExec(t, admin, "delete from public.profiles where id=$1", reader.ID)
+		sbExec(t, admin, "delete from auth.users where id=$1", reader.ID)
+	})
+	var readerSession struct {
+		Token string `json:"access_token"`
+	}
+	if status := request("/auth/v1/token?grant_type=password", anon, anon, map[string]string{"email": readerEmail, "password": readerPassword}, &readerSession); status != 200 {
+		t.Fatalf("reader Auth login: %d", status)
+	}
+	var feed sbRecommendationPage
+	if status := request("/rest/v1/rpc/get_for_you_feed", anon, readerSession.Token, map[string]int{"requested_limit": 20}, &feed); status != 200 || len(feed.Items) != 1 {
+		t.Fatalf("real feed RPC: %d", status)
+	}
+	var action map[string]any
+	if status := request("/rest/v1/rpc/apply_feed_action", anon, readerSession.Token, map[string]any{"requested_id": domain.UUID(), "requested_delivery": feed.Items[0].Delivery, "requested_action": "like", "expected_version": 0}, &action); status != 200 || action["liked"] != true || action["action_version"] != float64(1) {
+		t.Fatalf("real action RPC: %d", status)
+	}
+	if status := request("/rest/v1/rpc/apply_feed_action", anon, readerSession.Token, map[string]any{"requested_id": domain.UUID(), "requested_delivery": feed.Items[0].Delivery, "requested_action": "unlike", "expected_version": 0}, nil); status != 409 {
+		t.Fatalf("optimistic conflict must be HTTP 409, got %d", status)
+	}
+	sbExec(t, admin, "update recsys.deliveries set delivered_at=statement_timestamp()-interval '2 seconds'where id=$1", feed.Items[0].Delivery)
+	var eventResult map[string]any
+	events := map[string]any{"requested_events": []map[string]any{{"event_id": domain.UUID(), "delivery_id": feed.Items[0].Delivery, "kind": "impression", "visible_ms": 1000, "visible_fraction": 1}}}
+	if status := request("/rest/v1/rpc/record_feed_events", anon, readerSession.Token, events, &eventResult); status != 200 || eventResult["accepted"] != float64(1) {
+		t.Fatalf("real telemetry RPC: %d", status)
+	}
+	if status := request("/rest/v1/rpc/record_feed_events", anon, readerSession.Token, events, &eventResult); status != 200 || eventResult["duplicates"] != float64(1) {
+		t.Fatalf("real telemetry retry: %d", status)
+	}
+	if status := request("/rest/v1/rpc/get_for_you_feed", anon, readerSession.Token, map[string]int{"requested_limit": 20}, &feed); status != 200 {
+		t.Fatalf("refresh request: %d", status)
+	}
+	if os.Getenv("YAP_SUPABASE_MODEL_TEST") == "1" {
+		cmd := sbWorkerCommand(workerDSN)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("real personalization worker: %v\n%s", err, output)
+		}
+		if status := request("/rest/v1/rpc/get_for_you_feed", anon, readerSession.Token, map[string]int{"requested_limit": 20}, &feed); status != 200 || feed.Model != "personalized-v1" || len(feed.Items) != 1 {
+			t.Fatalf("real prepared feed: %d", status)
+		}
+		var clusters int
+		if err := admin.QueryRow(context.Background(), "select count(*)from recsys.interest_clusters where user_id=$1", reader.ID).Scan(&clusters); err != nil || clusters != 1 {
+			t.Fatal("real E5-backed like did not create an interest")
+		}
+	}
+	if status := request("/rest/v1/rpc/get_for_you_feed", anon, anon, map[string]int{"requested_limit": 20}, nil); status != 401 && status != 403 {
+		t.Fatalf("anonymous feed access: %d", status)
+	}
+	sbExec(t, admin, "update recsys.feed_snapshots set expires_at=statement_timestamp()-interval '1 second'where id=$1", feed.Session)
+	if status := request("/rest/v1/rpc/get_for_you_feed", anon, readerSession.Token, map[string]any{"requested_session": feed.Session}, nil); status != 410 {
+		t.Fatalf("expired session must be HTTP 410: %d", status)
+	}
+	if status := request("/rest/v1/rpc/get_for_you_feed", anon, readerSession.Token, map[string]any{"requested_session": domain.UUID()}, nil); status != 404 {
+		t.Fatalf("unknown session must be HTTP 404: %d", status)
 	}
 }

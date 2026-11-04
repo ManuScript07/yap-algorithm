@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$AppRoot,
     [switch]$Race,
     [switch]$WithModel,
-    [switch]$WithLoad
+    [switch]$WithLoad,
+    [string]$Run = '^TestSupabaseLocalPipeline$'
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
@@ -32,7 +33,8 @@ try {
     $env:GOMODCACHE = Join-Path $serviceRoot '.cache/gomod'
     $env:GOCACHE = Join-Path $serviceRoot '.cache/go-build'
     Set-Location $serviceRoot
-    $arguments = @('test', './tests', '-run', '^TestSupabaseLocalPipeline$', '-count=1', '-v', '-timeout=3m')
+    $timeout = if ($WithLoad) { '6m' } else { '3m' }
+    $arguments = @('test', './tests', '-run', $Run, '-count=1', '-v', "-timeout=$timeout")
     if ($Race) { $arguments += '-race' }
     & go @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Supabase integration tests failed.' }
