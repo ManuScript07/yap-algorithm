@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.4.0
+  version: 1.5.0
   description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
     session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
     enforce optimistic action_version. Internal vectors and scores are never returned.
@@ -743,6 +743,40 @@ paths:
                 $ref: '#/components/schemas/FriendsPage'
         default:
           $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/get_nearby_feed:
+    post:
+      operationId: get_nearby_feed
+      description: >-
+        Chronological explicit publication geotags within 1..50 km of the caller's location updated within 12 hours.
+        No ML dependency. Seven-day publication window; private origin fixed for a 20-minute session. At most 2000
+        spatial candidates examined per page. An empty page can have has_more=true; always use next_cursor to continue.
+        Replays preserve issued IDs and recheck current blocks, bans, audience and original access. Coordinates follow
+        existing friend permissions. Follow alone grants no private audience or precise location. Separate 60 reads/minute
+        quota; code 42901. Missing/stale own location returns 412 nearby_location_required. Reset invalidates session (409).
+        Receipts use surface nearby and common telemetry/action RPCs; no origin coordinates are returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requested_session:
+                  type: [string, 'null']
+                  format: uuid
+                  default: null
+                after_position: {type: integer, minimum: -1, default: -1}
+                requested_limit: {type: integer, minimum: 1, maximum: 30, default: 20}
+                requested_radius_km: {type: integer, minimum: 1, maximum: 50, default: 50}
+      responses:
+        '200':
+          description: Bounded chronological page; continue even after empty items when has_more is true.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NearbyPage'}
+        default:
+          $ref: '#/components/responses/RPCError'
   /rest/v1/rpc/create_feed_repost:
     post:
       operationId: create_feed_repost
@@ -1061,7 +1095,7 @@ components:
           liked: {type: boolean}
     FeedPage:
       type: object
-      required: [contract_version, session_id, items, next_cursor, has_more, expires_at, model, refresh]
+      required: [contract_version, session_id, items, next_cursor, has_more, expires_at, model, versions, refresh]
       properties:
         contract_version: {type: integer, const: 1}
         session_id: {type: string, format: uuid}
@@ -1090,7 +1124,15 @@ components:
               after_position: {type: integer, minimum: 0, maximum: 199}
         has_more: {type: boolean}
         expires_at: {type: string, format: date-time}
-        model: {type: string, description: fallback-v1 or personalized-v1; allow future versions.}
+        model: {type: string, description: fallback-v1 or personalized-v2; existing personalized-v1 sessions remain readable.}
+        versions:
+          type: object
+          required: [features, policy, embedding_space]
+          description: Actual producing snapshot versions; opaque IDs, preserve for diagnostics. A fallback has no semantic features.
+          properties:
+            features: {type: string}
+            policy: {type: string}
+            embedding_space: {type: string}
         refresh:
           type: object
           required: [status, revision, processed_revision, prepared_at]
@@ -1469,6 +1511,13 @@ components:
       - has_more
       - next_cursor
       - items
+    NearbyPage:
+      allOf:
+      - {$ref: '#/components/schemas/FriendsPage'}
+      - type: object
+        required: [radius_km]
+        properties:
+          radius_km: {type: integer, minimum: 1, maximum: 50}
     CommentMutation:
       type: object
       properties:

@@ -138,7 +138,7 @@ func sbRecommendationLoad(t *testing.T, admin *pgxpool.Pool, index *postgres.Ind
 			if err := json.Unmarshal(raw, &page); err != nil {
 				return err
 			}
-			if page.Model != "personalized-v1" || len(page.Items) != 20 {
+			if page.Model != "personalized-v2" || len(page.Items) != 20 {
 				return fmt.Errorf("unprepared feed for user %d", i)
 			}
 		}

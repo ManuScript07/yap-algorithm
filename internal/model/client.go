@@ -62,6 +62,30 @@ func (c *Client) Encode(ctx context.Context, text string) ([]float64, error) {
 	}
 	return domain.NormalizeVector(out.Embedding)
 }
+
+func (c *Client) EncodeBatch(ctx context.Context, texts []string) ([][]float64, error) {
+	if len(texts) < 1 || len(texts) > 8 {
+		return nil, domain.ErrInvalid
+	}
+	var out struct {
+		Embeddings [][]float64 `json:"embeddings"`
+		Revision   string      `json:"revision"`
+	}
+	if err := c.call(ctx, "/embed-batch", map[string]any{"texts": texts}, &out); err != nil {
+		return nil, err
+	}
+	if out.Revision != c.Revision || len(out.Embeddings) != len(texts) {
+		return nil, errors.New("embedding_batch_contract_mismatch")
+	}
+	for i := range out.Embeddings {
+		vector, err := domain.NormalizeVector(out.Embeddings[i])
+		if err != nil {
+			return nil, err
+		}
+		out.Embeddings[i] = vector
+	}
+	return out.Embeddings, nil
+}
 func (c *Client) Score(ctx context.Context, features [][]float64) ([]float64, string, error) {
 	var out struct {
 		Scores  []float64 `json:"scores"`

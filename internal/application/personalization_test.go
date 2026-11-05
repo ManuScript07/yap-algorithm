@@ -48,7 +48,7 @@ func TestPersonalizerPublishesVersionedSnapshot(t *testing.T) {
 	if err != nil || !worked || r.result == nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if r.result.Input.Epoch != 3 || r.result.Input.Revision != 17 || r.result.FeatureVersion != PersonalizationVersion || r.result.Candidates[0].PostVersion != 2 {
+	if r.result.Input.Epoch != 3 || r.result.Input.Revision != 17 || r.result.FeatureVersion != FeatureVersion || r.result.PolicyVersion != PolicyVersion || r.result.Candidates[0].PostVersion != 2 {
 		t.Fatal("snapshot watermarks were lost")
 	}
 }

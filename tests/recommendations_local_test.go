@@ -153,7 +153,7 @@ func sbRecommendations(t *testing.T, admin *pgxpool.Pool, index *postgres.IndexR
 		}
 		sbRefresh(t, f, repo)
 		prepared := sbRecommendPage(t, f, f.viewer, nil, -1, 7)
-		if prepared.Model != "personalized-v1" {
+		if prepared.Model != "personalized-v2" {
 			t.Fatal("worker snapshot not served")
 		}
 		_, err := f.rpc(f.stranger, "select public.get_for_you_feed($1,-1,7)", prepared.Session)
@@ -364,7 +364,7 @@ func sbRecommendations(t *testing.T, admin *pgxpool.Pool, index *postgres.IndexR
 		if err != nil || !found || old.Lease == current.Lease {
 			t.Fatal("lease was not reclaimed")
 		}
-		if accepted, err := repo.Publish(ctx, old, application.RecommendationResult{Input: input, FeatureVersion: application.PersonalizationVersion}); err != nil || accepted {
+		if accepted, err := repo.Publish(ctx, old, application.RecommendationResult{Input: input, FeatureVersion: application.FeatureVersion, PolicyVersion: application.PolicyVersion}); err != nil || accepted {
 			t.Fatal("expired owner published")
 		}
 		if err := repo.RetryRefresh(ctx, old); err != nil {
@@ -375,7 +375,7 @@ func sbRecommendations(t *testing.T, admin *pgxpool.Pool, index *postgres.IndexR
 			t.Fatal(err)
 		}
 		sbExec(t, admin, "update feed.posts set text='different meaning'where id=$1", posts[0])
-		if accepted, err := repo.Publish(ctx, current, application.RecommendationResult{Input: input, Profile: ranking.BuildProfile(input.Evidence, input.At), FeatureVersion: application.PersonalizationVersion}); err != nil || accepted {
+		if accepted, err := repo.Publish(ctx, current, application.RecommendationResult{Input: input, Profile: ranking.BuildProfile(input.Evidence, input.At), FeatureVersion: application.FeatureVersion, PolicyVersion: application.PolicyVersion}); err != nil || accepted {
 			t.Fatal("obsolete text evidence published")
 		}
 		sbRefresh(t, f, repo)
@@ -399,7 +399,7 @@ func sbRecommendations(t *testing.T, admin *pgxpool.Pool, index *postgres.IndexR
 		}
 		delivery := sbDelivery(t, f, f.viewer, posts[0])
 		sbAction(t, f, f.viewer, domain.UUID(), delivery, "like")
-		if accepted, err := repo.Publish(ctx, job, application.RecommendationResult{Input: input, FeatureVersion: application.PersonalizationVersion}); err != nil || !accepted {
+		if accepted, err := repo.Publish(ctx, job, application.RecommendationResult{Input: input, FeatureVersion: application.FeatureVersion, PolicyVersion: application.PolicyVersion}); err != nil || !accepted {
 			t.Fatalf("intermediate snapshot: %v", err)
 		}
 		var remaining int
@@ -440,7 +440,7 @@ func sbRecommendations(t *testing.T, admin *pgxpool.Pool, index *postgres.IndexR
 		}
 		done := make(chan outcome, 1)
 		go func() {
-			accepted, err := repo.Publish(ctx, job, application.RecommendationResult{Input: input, Profile: ranking.BuildProfile(input.Evidence, input.At), FeatureVersion: application.PersonalizationVersion})
+			accepted, err := repo.Publish(ctx, job, application.RecommendationResult{Input: input, Profile: ranking.BuildProfile(input.Evidence, input.At), FeatureVersion: application.FeatureVersion, PolicyVersion: application.PolicyVersion})
 			done <- outcome{accepted, err}
 		}()
 		locked := false
@@ -530,7 +530,7 @@ func sbRecommendations(t *testing.T, admin *pgxpool.Pool, index *postgres.IndexR
 			t.Error(err)
 		}
 		var snapshots int
-		if err := admin.QueryRow(ctx, "select count(*)from recsys.feed_snapshots where user_id=any($1::uuid[])and model='personalized-v1'", []string{f.viewer, f.stranger}).Scan(&snapshots); err != nil || snapshots != 2 {
+		if err := admin.QueryRow(ctx, "select count(*)from recsys.feed_snapshots where user_id=any($1::uuid[])and model='personalized-v2'", []string{f.viewer, f.stranger}).Scan(&snapshots); err != nil || snapshots != 2 {
 			t.Fatalf("duplicate/lost refresh: %d %v", snapshots, err)
 		}
 	})
@@ -679,7 +679,7 @@ func sbRecommendationTelemetry(t *testing.T, admin *pgxpool.Pool, repo *postgres
 	if _, err := f.rpc(f.viewer, "select public.reset_recommendation_interests($1)", domain.UUID()); err != nil {
 		t.Fatal(err)
 	}
-	accepted, err := repo.Publish(ctx, job, application.RecommendationResult{Input: input, Profile: ranking.BuildProfile(input.Evidence, input.At), FeatureVersion: application.PersonalizationVersion})
+	accepted, err := repo.Publish(ctx, job, application.RecommendationResult{Input: input, Profile: ranking.BuildProfile(input.Evidence, input.At), FeatureVersion: application.FeatureVersion, PolicyVersion: application.PolicyVersion})
 	if err != nil || accepted {
 		t.Fatal("pre-reset job published a profile")
 	}

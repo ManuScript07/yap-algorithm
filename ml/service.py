@@ -1,7 +1,7 @@
 """Local CPU embedding / optional trained ranking service. No client credentials."""
 from __future__ import annotations
 import argparse
-from functools import lru_cache
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
@@ -51,19 +51,33 @@ def main():
         ranker.load_model(str(args.ranker))
         rank_version = meta["version"]
 
-    @lru_cache(maxsize=2048)
-    def embed(text):
-        # Symmetric similarity: query prefix on every post, as specified by E5.
+    embedding_cache = OrderedDict()
+
+    def embed_batch(texts):
+        # One bounded ONNX invocation. Deduplicate repeated texts and share the
+        # same bounded cache between single and batch requests.
         with gate:
-            tokens = tokenizer(["query: " + text], max_length=512, truncation=True, padding=True, return_tensors="np")
-            feeds = {name: np.asarray(value, dtype=np.int64) for name, value in tokens.items() if name in input_names}
-            if "token_type_ids" in input_names and "token_type_ids" not in feeds:
-                feeds["token_type_ids"] = np.zeros_like(feeds["input_ids"], dtype=np.int64)
-            hidden = encoder.run(None, feeds)[0]
-            mask = np.asarray(tokens["attention_mask"], dtype=np.float32)[..., None]
-            pooled = (hidden * mask).sum(axis=1) / mask.sum(axis=1).clip(min=1)
-            pooled /= np.linalg.norm(pooled, axis=1, keepdims=True).clip(min=1e-12)
-            return pooled[0].tolist()
+            for text in texts:
+                if text in embedding_cache:
+                    embedding_cache.move_to_end(text)
+            missing = list(dict.fromkeys(text for text in texts if text not in embedding_cache))
+            if missing:
+                tokens = tokenizer(["query: " + text for text in missing], max_length=512, truncation=True, padding=True, return_tensors="np")
+                feeds = {name: np.asarray(value, dtype=np.int64) for name, value in tokens.items() if name in input_names}
+                if "token_type_ids" in input_names and "token_type_ids" not in feeds:
+                    feeds["token_type_ids"] = np.zeros_like(feeds["input_ids"], dtype=np.int64)
+                hidden = encoder.run(None, feeds)[0]
+                mask = np.asarray(tokens["attention_mask"], dtype=np.float32)[..., None]
+                pooled = (hidden * mask).sum(axis=1) / mask.sum(axis=1).clip(min=1)
+                pooled /= np.linalg.norm(pooled, axis=1, keepdims=True).clip(min=1e-12)
+                for text, vector in zip(missing, pooled.tolist()):
+                    embedding_cache[text] = vector
+                while len(embedding_cache) > 2048:
+                    embedding_cache.popitem(last=False)
+            return [embedding_cache[text] for text in texts]
+
+    def embed(text):
+        return embed_batch([text])[0]
 
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -95,6 +109,13 @@ def main():
                     if not isinstance(text, str) or not text.strip() or len(text) > 5000:
                         raise ValueError("text")
                     self.reply(200, {"embedding": embed(text), "revision": EMBEDDING_ID})
+                elif self.path == "/embed-batch":
+                    texts = data["texts"]
+                    if not isinstance(texts, list) or not 1 <= len(texts) <= 8:
+                        raise ValueError("batch")
+                    if any(not isinstance(text, str) or not text.strip() or len(text) > 5000 for text in texts):
+                        raise ValueError("texts")
+                    self.reply(200, {"embeddings": embed_batch(texts), "revision": EMBEDDING_ID})
                 elif self.path == "/score":
                     if ranker is None:
                         self.reply(503, {"error": "ranker_not_loaded"})

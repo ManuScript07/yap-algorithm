@@ -14,8 +14,9 @@ import (
 )
 
 type RecommendationRepository struct {
-	pool  *pgxpool.Pool
-	model string
+	pool     *pgxpool.Pool
+	model    string
+	priority *int
 }
 
 // Recommendations shares the restricted pool with indexing. It never creates
@@ -30,8 +31,10 @@ func (r *IndexRepository) Recommendations(ctx context.Context) (*RecommendationR
 	var contract struct {
 		Version  int    `json:"version"`
 		Features string `json:"feature_version"`
+		Policy   string `json:"policy_version"`
+		Space    string `json:"embedding_space"`
 	}
-	if err := json.Unmarshal(raw, &contract); err != nil || contract.Version != 1 || contract.Features != application.PersonalizationVersion {
+	if err := json.Unmarshal(raw, &contract); err != nil || contract.Version != 2 || contract.Features != application.FeatureVersion || contract.Policy != application.PolicyVersion || contract.Space != r.model {
 		return nil, errors.New("personalization contract mismatch")
 	}
 	return &RecommendationRepository{pool: r.pool, model: r.model}, nil
@@ -41,7 +44,7 @@ func (r *RecommendationRepository) ClaimRefresh(ctx context.Context) (applicatio
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	var job application.RefreshJob
-	err := r.pool.QueryRow(ctx, "select user_id::text,lease::text from recsys.claim_refresh_job($1::uuid)", domain.UUID()).Scan(&job.UserID, &job.Lease)
+	err := r.pool.QueryRow(ctx, "select user_id::text,lease::text from recsys.claim_refresh_job($1::uuid,$2::integer)", domain.UUID(), r.priority).Scan(&job.UserID, &job.Lease)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return job, false, nil
 	}
@@ -109,17 +112,20 @@ func (r *RecommendationRepository) LoadCandidates(ctx context.Context, job appli
 		return nil, err
 	}
 	var wire []struct {
-		ID          string    `json:"id"`
-		Author      string    `json:"author_id"`
-		Version     int       `json:"version"`
-		At          time.Time `json:"created_at"`
-		Vector      string    `json:"vector"`
-		Sources     []string  `json:"sources"`
-		Social      bool      `json:"social"`
-		Impressions int       `json:"impressions"`
-		Likes       int       `json:"likes"`
-		Reposts     int       `json:"reposts"`
-		Seen        bool      `json:"seen"`
+		ID                string    `json:"id"`
+		Author            string    `json:"author_id"`
+		Version           int       `json:"version"`
+		At                time.Time `json:"created_at"`
+		Vector            string    `json:"vector"`
+		Sources           []string  `json:"sources"`
+		Social            bool      `json:"social"`
+		Nearby            bool      `json:"nearby"`
+		Impressions       int       `json:"impressions"`
+		Likes             int       `json:"likes"`
+		Reposts           int       `json:"reposts"`
+		AuthorImpressions int       `json:"author_impressions"`
+		AuthorViewers     int       `json:"author_viewers"`
+		Seen              bool      `json:"seen"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return nil, err
@@ -133,7 +139,7 @@ func (r *RecommendationRepository) LoadCandidates(ctx context.Context, job appli
 		if c.Vector != "" {
 			vector = domain.ParseVector(c.Vector)
 		}
-		rows = append(rows, ranking.Candidate{ID: c.ID, AuthorID: c.Author, PostVersion: c.Version, CreatedAt: c.At, Embedding: vector, Sources: c.Sources, Social: c.Social, Impressions: c.Impressions, Likes: c.Likes, Reposts: c.Reposts, Seen: c.Seen})
+		rows = append(rows, ranking.Candidate{ID: c.ID, AuthorID: c.Author, PostVersion: c.Version, CreatedAt: c.At, Embedding: vector, Sources: c.Sources, Social: c.Social, Nearby: c.Nearby, Impressions: c.Impressions, Likes: c.Likes, Reposts: c.Reposts, AuthorImpressions: c.AuthorImpressions, AuthorViewers: c.AuthorViewers, HasAuthorExposure: true, Seen: c.Seen})
 	}
 	return rows, nil
 }
@@ -152,7 +158,7 @@ func (r *RecommendationRepository) Publish(ctx context.Context, job application.
 		evidence = append(evidence, map[string]any{"post_id": e.PostID, "post_version": e.PostVersion})
 	}
 	body, err := json.Marshal(map[string]any{"epoch": result.Input.Epoch, "revision": result.Input.Revision, "at": result.Input.At, "needs_embeddings": result.Input.NeedsEmbeddings,
-		"feature_version": result.FeatureVersion, "profile": profiles, "items": items, "evidence": evidence})
+		"feature_version": result.FeatureVersion, "policy_version": result.PolicyVersion, "embedding_space": r.model, "profile": profiles, "items": items, "evidence": evidence})
 	if err != nil {
 		return false, err
 	}
@@ -196,4 +202,20 @@ func (r *RecommendationRepository) RetryFailed(ctx context.Context) (int, error)
 		return 0, errors.New("cannot reschedule failed recommendation jobs")
 	}
 	return recovered, nil
+}
+
+// Lane returns a repository sharing the same bounded connection pool.
+func (r *RecommendationRepository) Lane(priority int) *RecommendationRepository {
+	copy := *r
+	copy.priority = &priority
+	return &copy
+}
+
+// Diagnostics contains aggregate counts/timings, never user IDs or content.
+func (r *RecommendationRepository) Diagnostics(ctx context.Context) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var raw []byte
+	err := r.pool.QueryRow(ctx, "select recsys.preparation_queue_snapshot()").Scan(&raw)
+	return raw, err
 }

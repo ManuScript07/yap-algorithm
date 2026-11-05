@@ -302,7 +302,7 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 					if json.Unmarshal(raw, &page) != nil {
 						feedErrors.Add(1)
 					}
-					if page.Model == "personalized-v1" {
+					if page.Model == "personalized-v2" {
 						personalized.Add(1)
 					}
 					if i%37 == 0 && len(page.Items) > 0 {

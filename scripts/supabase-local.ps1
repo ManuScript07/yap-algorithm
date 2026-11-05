@@ -2,12 +2,20 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('setup', 'worker')][string]$Action,
     [string]$AppRoot,
     [ValidateRange(1, 8)][int]$Concurrency = 2,
+    [ValidateRange(1, 8)][int]$BatchSize = 4,
     [switch]$Once,
-    [switch]$RetryFailed
+    [switch]$RetryFailed,
+    [switch]$EnqueueBackfill,
+    [string]$BackfillAfter,
+    [ValidateRange(1,500)][int]$BackfillLimit = 500
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
 $configPath = Join-Path $serviceRoot '.local/supabase-worker.json'
+if ($RetryFailed -and $EnqueueBackfill) { throw 'Choose one maintenance action.' }
+if ($BackfillAfter -and (!$EnqueueBackfill -or ![guid]::TryParse($BackfillAfter, [ref]([guid]::Empty)))) {
+    throw 'BackfillAfter requires EnqueueBackfill and a UUID cursor.'
+}
 
 if ($Action -eq 'setup') {
     if (!$AppRoot) { throw 'AppRoot is required for setup.' }
@@ -65,9 +73,13 @@ try {
     $env:MODEL_URL = $config.model_url
     $env:GOMODCACHE = Join-Path $serviceRoot '.cache/gomod'
     $env:GOCACHE = Join-Path $serviceRoot '.cache/go-build'
-    $arguments = @('run', './cmd/worker', '-concurrency', $Concurrency)
+    $arguments = @('run', './cmd/worker', '-concurrency', $Concurrency, '-batch-size', $BatchSize)
     if ($Once) { $arguments += '-once' }
     if ($RetryFailed) { $arguments += '-retry-failed' }
+    if ($EnqueueBackfill) {
+        $arguments += @('-enqueue-backfill','-backfill-limit',$BackfillLimit)
+        if ($BackfillAfter) { $arguments += @('-backfill-after',$BackfillAfter) }
+    }
     & go @arguments
     if ($LASTEXITCODE -ne 0) { throw 'The worker exited with an error.' }
 } finally {

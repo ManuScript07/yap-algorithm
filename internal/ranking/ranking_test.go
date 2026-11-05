@@ -6,6 +6,18 @@ import (
 	"yap-algorithm/internal/domain"
 )
 
+func TestDiscoveryUsesAuthorCoverageInsteadOfResettingForANewPost(t *testing.T) {
+	established := Candidate{HasAuthorExposure: true, Impressions: 0, AuthorImpressions: 10000, AuthorViewers: 1000}
+	newAuthor := Candidate{HasAuthorExposure: true, Impressions: 100, AuthorImpressions: 0, AuthorViewers: 0}
+	if underexposed(established) || !underexposed(newAuthor) {
+		t.Fatal("a new post reset established-author reach or own views hid a new author")
+	}
+	now := time.Now()
+	if Features(established, nil, now)[5] >= Features(newAuthor, nil, now)[5] {
+		t.Fatal("coverage feature does not reflect author reach")
+	}
+}
+
 func vec(axis int) []float64 { v := make([]float64, domain.Dimensions); v[axis] = 1; return v }
 func TestPersonalizationAndNegativeFeedback(t *testing.T) {
 	now := time.Now()

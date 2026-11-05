@@ -21,7 +21,24 @@ import (
 
 const embeddingModel = "intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3:onnx-int8:query"
 
-func run(ctx context.Context, dsn, modelURL string, concurrency int, once, retryFailed bool) error {
+type config struct {
+	DSN, ModelURL                      string
+	Concurrency, BatchSize             int
+	Once, RetryFailed, EnqueueBackfill bool
+	BackfillAfter                      string
+	BackfillLimit                      int
+}
+
+func run(ctx context.Context, options config) error {
+	dsn, modelURL, concurrency := options.DSN, options.ModelURL, options.Concurrency
+	once, retryFailed := options.Once, options.RetryFailed
+	if options.BatchSize < 1 || options.BatchSize > 8 {
+		return errors.New("batch size must be between 1 and 8")
+	}
+	if options.EnqueueBackfill && retryFailed {
+		return errors.New("choose one maintenance action")
+	}
+
 	if dsn == "" {
 		return errors.New("DATABASE_URL is required")
 	}
@@ -37,6 +54,13 @@ func run(ctx context.Context, dsn, modelURL string, concurrency int, once, retry
 	if err != nil {
 		return err
 	}
+	if options.EnqueueBackfill {
+		result, err := repo.EnqueueBackfill(ctx, options.BackfillAfter, options.BackfillLimit)
+		if err == nil {
+			slog.Info("backfill_enqueued", "result", string(result))
+		}
+		return err
+	}
 	if retryFailed {
 		count, err := recommendations.RetryFailed(ctx)
 		if err == nil {
@@ -44,15 +68,18 @@ func run(ctx context.Context, dsn, modelURL string, concurrency int, once, retry
 		}
 		return err
 	}
-	indexer := application.Indexer{Repository: repo, Encoder: model.New(modelURL, embeddingModel)}
-	personalizer := application.Personalizer{Repository: recommendations}
+	encoder := model.New(modelURL, embeddingModel)
+	indexer := application.BatchIndexer{Repository: repo, Encoder: encoder, Kind: "live", Size: options.BatchSize}
+	backfill := application.BatchIndexer{Repository: repo, Encoder: encoder, Kind: "backfill", Size: options.BatchSize}
+	interactive := application.Personalizer{Repository: recommendations.Lane(0)}
+	scheduled := application.Personalizer{Repository: recommendations.Lane(1)}
 	var workers sync.WaitGroup
 	var failed atomic.Bool
 	for i := 0; i < concurrency; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			pipeline := application.Pipeline{Processors: []application.Processor{indexer, personalizer}}
+			pipeline := application.Pipeline{Processors: []application.Processor{interactive, indexer, interactive, scheduled, backfill}}
 			for ctx.Err() == nil {
 				jobCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 				worked, err := pipeline.Once(jobCtx)
@@ -89,11 +116,20 @@ func run(ctx context.Context, dsn, modelURL string, concurrency int, once, retry
 	// Cleanup has its own schedule, so a continuous backlog cannot starve it.
 	cleanup := time.NewTicker(time.Minute)
 	defer cleanup.Stop()
+	diagnostics := time.NewTicker(30 * time.Second)
+	defer diagnostics.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			workers.Wait()
 			return nil
+		case <-diagnostics.C:
+			snapshot, err := recommendations.Diagnostics(ctx)
+			if err == nil {
+				slog.Info("preparation_queues", "snapshot", string(snapshot))
+			} else if ctx.Err() == nil {
+				slog.Warn("preparation_diagnostics_failed")
+			}
 		case <-cleanup.C:
 			if err := repo.Cleanup(ctx); err != nil && ctx.Err() == nil {
 				slog.Warn("index_cleanup_failed")
@@ -107,7 +143,11 @@ func run(ctx context.Context, dsn, modelURL string, concurrency int, once, retry
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	concurrency := flag.Int("concurrency", 2, "parallel index jobs (1..8)")
+	concurrency := flag.Int("concurrency", 2, "parallel preparation tasks (1..8)")
+	batchSize := flag.Int("batch-size", 4, "texts per model batch (1..8)")
+	enqueueBackfill := flag.Bool("enqueue-backfill", false, "enqueue one bounded backfill range and exit")
+	backfillAfter := flag.String("backfill-after", "", "exclusive post UUID cursor for backfill")
+	backfillLimit := flag.Int("backfill-limit", 500, "posts to inspect for backfill (1..500)")
 	once := flag.Bool("once", false, "process currently available jobs and exit")
 	retryFailed := flag.Bool("retry-failed", false, "reschedule a bounded batch of exhausted jobs and exit")
 	flag.Parse()
@@ -117,7 +157,7 @@ func main() {
 	if modelURL == "" {
 		modelURL = "http://127.0.0.1:8091"
 	}
-	if err := run(ctx, os.Getenv("DATABASE_URL"), modelURL, *concurrency, *once, *retryFailed); err != nil {
+	if err := run(ctx, config{DSN: os.Getenv("DATABASE_URL"), ModelURL: modelURL, Concurrency: *concurrency, BatchSize: *batchSize, Once: *once, RetryFailed: *retryFailed, EnqueueBackfill: *enqueueBackfill, BackfillAfter: *backfillAfter, BackfillLimit: *backfillLimit}); err != nil {
 		slog.Error("worker_stopped", "error", err)
 		os.Exit(1)
 	}

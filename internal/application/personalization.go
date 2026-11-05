@@ -8,7 +8,11 @@ import (
 	"yap-algorithm/internal/ranking"
 )
 
-const PersonalizationVersion = "personalized-v1"
+const (
+	PersonalizationVersion = "personalized-v2"
+	FeatureVersion         = "feed-features-v2"
+	PolicyVersion          = "hybrid-v2"
+)
 
 type RefreshJob struct{ UserID, Lease string }
 type ProfileInput struct {
@@ -23,6 +27,7 @@ type RecommendationResult struct {
 	Profile        []ranking.Interest
 	Candidates     []ranking.Candidate
 	FeatureVersion string
+	PolicyVersion  string
 }
 
 type RecommendationRepository interface {
@@ -50,11 +55,11 @@ func (p Personalizer) Once(ctx context.Context) (bool, error) {
 		candidates, err = p.Repository.LoadCandidates(ctx, job, input, profile)
 		if err == nil {
 			ranking.Score(candidates, profile, input.At)
-			// Geography is intentionally absent from this stage's candidate data.
-			// This feed prioritizes interests and discovery; nearby is separate.
+			// Geography is a small, bounded candidate source. Semantic interests
+			// remain dominant; the chronological nearby tab is served by SQL.
 			candidates = ranking.SelectForYou(candidates)
 			if err = ctx.Err(); err == nil {
-				_, err = p.Repository.Publish(ctx, job, RecommendationResult{Input: input, Profile: profile, Candidates: candidates, FeatureVersion: PersonalizationVersion})
+				_, err = p.Repository.Publish(ctx, job, RecommendationResult{Input: input, Profile: profile, Candidates: candidates, FeatureVersion: FeatureVersion, PolicyVersion: PolicyVersion})
 			}
 		}
 	}

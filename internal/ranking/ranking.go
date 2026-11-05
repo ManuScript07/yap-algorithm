@@ -13,17 +13,19 @@ const Version = "hybrid-v1"
 var FeatureNames = []string{"semantic", "social", "quality", "freshness", "negative_similarity", "low_exposure", "nearby", "seen"}
 
 type Candidate struct {
-	ID, AuthorID                string
-	PostVersion                 int
-	CreatedAt                   time.Time
-	Embedding                   []float64
-	Sources                     []string
-	Social, Nearby              bool
-	Impressions, Likes, Reposts int
-	Seen                        bool
-	Features                    []float64
-	Score                       float64
-	Reasons                     []string
+	ID, AuthorID                     string
+	PostVersion                      int
+	CreatedAt                        time.Time
+	Embedding                        []float64
+	Sources                          []string
+	Social, Nearby                   bool
+	Impressions, Likes, Reposts      int
+	AuthorImpressions, AuthorViewers int
+	HasAuthorExposure                bool
+	Seen                             bool
+	Features                         []float64
+	Score                            float64
+	Reasons                          []string
 }
 type Interest struct {
 	Vector    []float64
@@ -46,7 +48,11 @@ func Features(c Candidate, interests []Interest, now time.Time) []float64 {
 	}
 	age := math.Max(0, now.Sub(c.CreatedAt).Hours())
 	quality := math.Min(1, (float64(c.Likes)+2*float64(c.Reposts)+1)/(float64(c.Impressions)+20))
-	return []float64{positive, boolf(c.Social), quality, math.Exp(-age / 48), negative, 1 / math.Sqrt(1+float64(c.Impressions)/20), boolf(c.Nearby), boolf(c.Seen)}
+	exposure := 1 / math.Sqrt(1+float64(c.Impressions)/20)
+	if c.HasAuthorExposure {
+		exposure = 1 / math.Sqrt(1+float64(c.AuthorViewers)/20+float64(c.AuthorImpressions)/200)
+	}
+	return []float64{positive, boolf(c.Social), quality, math.Exp(-age / 48), negative, exposure, boolf(c.Nearby), boolf(c.Seen)}
 }
 func Score(candidates []Candidate, interests []Interest, now time.Time) {
 	for i := range candidates {
@@ -64,7 +70,7 @@ func Score(candidates []Candidate, interests []Interest, now time.Time) {
 		if c.Nearby {
 			c.Reasons = append(c.Reasons, "nearby")
 		}
-		if c.Impressions < 20 {
+		if underexposed(*c) {
 			c.Reasons = append(c.Reasons, "discover_post")
 		}
 	}
@@ -97,7 +103,7 @@ func Rerank(in []Candidate, limit int, exploreEvery int) []Candidate {
 			if len(out) > 0 && out[len(out)-1].AuthorID == c.AuthorID {
 				v -= 0.25
 			}
-			if explore && c.Impressions < 20 {
+			if explore && underexposed(c) {
 				v += 0.20
 			}
 			if v > bestValue {
@@ -108,7 +114,7 @@ func Rerank(in []Candidate, limit int, exploreEvery int) []Candidate {
 			break
 		}
 		c := pool[best]
-		if explore && c.Impressions < 20 {
+		if explore && underexposed(c) {
 			c.Reasons = append(c.Reasons, "exploration")
 		}
 		out = append(out, c)
@@ -127,4 +133,11 @@ func boolf(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+func underexposed(c Candidate) bool {
+	if c.HasAuthorExposure {
+		return c.AuthorViewers < 20 && c.AuthorImpressions < 200
+	}
+	return c.Impressions < 20
 }

@@ -627,7 +627,7 @@ func sbREST(t *testing.T, admin *pgxpool.Pool, workerDSN string) {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("real personalization worker: %v\n%s", err, output)
 		}
-		if status := request("/rest/v1/rpc/get_for_you_feed", anon, readerSession.Token, map[string]int{"requested_limit": 20}, &feed); status != 200 || feed.Model != "personalized-v1" || len(feed.Items) != 1 {
+		if status := request("/rest/v1/rpc/get_for_you_feed", anon, readerSession.Token, map[string]int{"requested_limit": 20}, &feed); status != 200 || feed.Model != "personalized-v2" || len(feed.Items) != 1 {
 			t.Fatalf("real prepared feed: %d", status)
 		}
 		var clusters int
