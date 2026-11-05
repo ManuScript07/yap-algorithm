@@ -372,6 +372,38 @@ func TestSupabaseLocalMedia(t *testing.T) {
 		if !bytes.Contains(raw, []byte("author_affinity")) {
 			t.Fatal("photo like had no effect on candidate retrieval")
 		}
+		result, status = c.rpc(strangerToken, "set_feed_author_followed", map[string]any{"requested_id": domain.UUID(), "requested_author": owner, "requested_following": true, "expected_version": 0})
+		if status != 200 || result["following"] != true {
+			t.Fatal("photo author could not be followed", result)
+		}
+		if err := admin.QueryRow(ctx, "select recsys.load_refresh_candidates($1::uuid,$2::uuid,1,$3,'[]')", stranger, lease, sbModel).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var candidates []struct {
+			ID      string   `json:"id"`
+			Sources []string `json:"sources"`
+			Vector  string   `json:"vector"`
+			Social  bool     `json:"social"`
+		}
+		if err := json.Unmarshal(raw, &candidates); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, candidate := range candidates {
+			if candidate.ID == publicPost {
+				for _, source := range candidate.Sources {
+					if source == "following" {
+						found = true
+					}
+				}
+				if candidate.Vector != "" || !candidate.Social {
+					t.Fatal("photo follow invented a text embedding or lost social interest")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("photo-only follow had no candidate-source effect")
+		}
 	})
 	t.Run("parallel_reservations_max_three_and_invalid_uploads", func(t *testing.T) {
 		post := domain.UUID()

@@ -6,7 +6,7 @@ param(
     [switch]$WithMedia,
     [switch]$WithSoak,
     [ValidateRange(1,120)][int]$SoakMinutes = 60,
-    [string]$Run = '^TestSupabaseLocal(Pipeline|Media|MediaCapacity|MediaDBOutage|Social|SocialSecurity|SocialLoad)$'
+    [string]$Run = '^TestSupabaseLocal(Pipeline|Media|MediaCapacity|MediaDBOutage|Social|SocialSecurity|SocialLoad|Follows|FollowsLoad)$'
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
@@ -60,7 +60,7 @@ try {
     $env:GOMODCACHE = Join-Path $serviceRoot '.cache/gomod'
     $env:GOCACHE = Join-Path $serviceRoot '.cache/go-build'
     Set-Location $serviceRoot
-    $timeout = if ($WithLoad) { '6m' } elseif ($WithMedia) { '5m' } else { '3m' }
+    $timeout = if ($WithLoad -and $WithMedia) { '10m' } elseif ($WithLoad) { '6m' } elseif ($WithMedia) { '5m' } else { '3m' }
     if ($WithSoak) { $timeout = "$($SoakMinutes+15)m"; $Run='^TestSupabaseLocalMediaSoak$' }
     $arguments = @('test', './tests', '-run', $Run, '-count=1', '-v', "-timeout=$timeout")
     if ($Race) { $arguments += '-race' }

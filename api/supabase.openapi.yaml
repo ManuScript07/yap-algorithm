@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.3.0
+  version: 1.4.0
   description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
     session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
     enforce optimistic action_version. Internal vectors and scores are never returned.
@@ -706,7 +706,7 @@ paths:
   /rest/v1/rpc/get_friends_feed:
     post:
       operationId: get_friends_feed
-      description: All current mutual friends, reverse chronology, including their plain reposts and quotes; deduplicate
+      description: All current mutual friends and explicitly followed authors, reverse chronology, including their accessible plain reposts and quotes; deduplicate
         original IDs. Stable issued pages, 20-minute session, maximum 30/page. Current friendship and content access
         are rechecked. Interest reset invalidates the session (409). Feed receipts use surface friends and the existing
         telemetry/action RPCs.
@@ -874,6 +874,158 @@ paths:
                 $ref: '#/components/schemas/ReportResult'
         default:
           $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/set_feed_author_followed:
+    post:
+      operationId: set_feed_author_followed
+      description: Set desired state with a new UUID per intent and expected_version from FollowState.version. Exact
+        transport retries reuse UUID/body/version; old retries return their original acknowledgement without overwriting
+        newer state. Ignore replies older than cached version and reconcile 409. Follow and friendship coexist independently.
+        Block removes both follow directions and advances versions; unblock does not restore them. Limit 120 requests/minute,
+        2000/day; new active follows additionally 30/minute and 500/day; maximum 10000 active follows. Daily counters
+        use UTC. Uses existing application error code 42901; HTTP status alone is insufficient.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_author
+              - requested_following
+              - expected_version
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_author:
+                  type: string
+                  format: uuid
+                requested_following:
+                  type: boolean
+                expected_version:
+                  type: integer
+                  format: int64
+                  minimum: 0
+      responses:
+        '200':
+          description: Current state, relation page or idempotent acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowResult'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/get_feed_author_follow_state:
+    post:
+      operationId: get_feed_author_follow_state
+      description: Read only the caller relationship to an existing target, including its version for reconciliation.
+        120 requests/minute, independently of list and write quotas. Returns no target profile or location.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_author
+              properties:
+                requested_author:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Current state, relation page or idempotent acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowState'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/get_feed_following:
+    post:
+      operationId: get_feed_following
+      description: Paginated active authors followed by requested_user (defaults to the caller). Public to authenticated
+        users, subject to current blocks/bans/deletion. 60 requests/minute on the caller, independent of followers/state/write
+        quotas. FollowPage defines ordering and next_cursor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: []
+              properties:
+                requested_user:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                after_user:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                requested_limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 30
+      responses:
+        '200':
+          description: Current state, relation page or idempotent acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowPage'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/get_feed_followers:
+    post:
+      operationId: get_feed_followers
+      description: Paginated active followers of requested_user (defaults to the caller). Public to authenticated
+        users, subject to current blocks/bans/deletion. Separate caller quota 60 requests/minute. No precision-location
+        fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: []
+              properties:
+                requested_user:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                after_user:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                requested_limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 30
+      responses:
+        '200':
+          description: Current state, relation page or idempotent acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowPage'
+        default:
+          $ref: '#/components/responses/RPCError'
 components:
   securitySchemes:
     apiKey: {type: apiKey, in: header, name: apikey}
@@ -977,7 +1129,7 @@ components:
         less_similar: {type: boolean}
     PostBase:
       type: object
-      required: [id, author_id, text, audience, language, version, created_at, updated_at, photos, location, is_repost, comment_count, repost_count, my_repost, reposted_by]
+      required: [id, author_id, text, audience, language, version, created_at, updated_at, photos, location, is_repost, comment_count, repost_count, my_repost, reposted_by, author_relationship]
       properties:
         id: {type: string, format: uuid}
         author_id: {type: string, format: uuid}
@@ -1054,6 +1206,7 @@ components:
             - author_id
             - username
             - created_at
+        author_relationship: {$ref: '#/components/schemas/FollowState'}
     DirectPost:
       allOf:
       - {$ref: '#/components/schemas/Post'}
@@ -1417,3 +1570,101 @@ components:
       - target_id
       - created_at
       - replayed
+    FollowState:
+      type: object
+      required:
+      - author_id
+      - following
+      - version
+      - can_follow
+      - is_friend
+      properties:
+        author_id:
+          type: string
+          format: uuid
+        following:
+          type: boolean
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+        can_follow:
+          type: boolean
+        is_friend:
+          type: boolean
+      description: Caller-owned follow intent and action version. Following never grants friendship, precise coordinates
+        or friends-only posts. A banned target may retain following=true while can_follow=false; unfollow remains
+        possible.
+    FollowResult:
+      type: object
+      required:
+      - request_id
+      - author_id
+      - following
+      - version
+      - changed
+      - replayed
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        author_id:
+          type: string
+          format: uuid
+        following:
+          type: boolean
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        changed:
+          type: boolean
+        replayed:
+          type: boolean
+    FollowPage:
+      type: object
+      required:
+      - user_id
+      - items
+      - has_more
+      - next_cursor
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required:
+            - user
+            - followed_at
+            - relationship
+            properties:
+              user:
+                $ref: '#/components/schemas/CommentAuthor'
+              followed_at:
+                type: string
+                format: date-time
+              relationship:
+                $ref: '#/components/schemas/FollowState'
+        has_more:
+          type: boolean
+        next_cursor:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - requested_user
+            - after_user
+            properties:
+              requested_user:
+                type: string
+                format: uuid
+              after_user:
+                type: string
+                format: uuid
+      description: Lists are public to authenticated active accounts. Owner and entries are rechecked for blocks,
+        bans and deletion. UUID ascending keyset, no unbounded total count. relationship describes the caller relative
+        to that row user; followed_at describes the listed relation. Do not mix cursors between owners or directions.
