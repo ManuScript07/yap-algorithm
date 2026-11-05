@@ -3,7 +3,8 @@ param(
     [string]$AppRoot,
     [ValidateRange(1,2)][int]$Concurrency = 1,
     [switch]$Once,
-    [switch]$RetryFailed
+    [switch]$RetryFailed,
+    [switch]$Status
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -67,6 +68,7 @@ try {
     $arguments = @('run','./cmd/media-worker','-concurrency',"$Concurrency")
     if ($Once) { $arguments += '-once' }
     if ($RetryFailed) { $arguments += '-retry-failed' }
+    if ($Status) { $arguments += '-status' }
     & go @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Media worker failed.' }
 } finally {

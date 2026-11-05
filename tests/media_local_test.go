@@ -9,7 +9,9 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"os/exec"
@@ -395,6 +397,31 @@ func TestSupabaseLocalMedia(t *testing.T) {
 			t.Fatalf("parallel reservation successes: %d", successes)
 		}
 		c.rpc(ownerToken, "cancel_feed_draft", map[string]string{"requested_post": post})
+		// Flutter's standard upload can use multipart: framing bytes are not
+		// part of the reserved file size. Validate the final measured file too.
+		post = domain.UUID()
+		var multipartBody bytes.Buffer
+		writer := multipart.NewWriter(&multipartBody)
+		headers := textproto.MIMEHeader{}
+		headers.Set("Content-Disposition", `form-data; name="file"; filename="photo.jpg"`)
+		headers.Set("Content-Type", "image/jpeg")
+		part, err := writer.CreatePart(headers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		part.Write(jpegData)
+		writer.Close()
+		for _, size := range []int{len(jpegData), 1} {
+			intent := reserve(post, domain.UUID(), "image/jpeg", size)
+			_, status := c.request("POST", "/storage/v1/object/feed-uploads/"+intent["path"].(string), ownerToken, writer.FormDataContentType(), multipartBody.Bytes())
+			if size == len(jpegData) && status != 200 {
+				t.Fatalf("valid multipart rejected: %d", status)
+			}
+			if size == 1 && status < 300 {
+				t.Fatal("underdeclared multipart accepted")
+			}
+		}
+		c.rpc(ownerToken, "cancel_feed_draft", map[string]string{"requested_post": post})
 		post = domain.UUID()
 		bad := append([]byte{}, jpegData[:len(jpegData)/2]...)
 		id := upload(post, bad, "image/jpeg")
@@ -453,12 +480,26 @@ func TestSupabaseLocalMedia(t *testing.T) {
 	t.Run("expired_leases_reservations_and_metadata_mismatches", func(t *testing.T) {
 		post, id := domain.UUID(), domain.UUID()
 		intent := reserve(post, id, "image/png", len(jpegData))
-		if _, status := c.request("POST", "/storage/v1/object/feed-uploads/"+intent["path"].(string), ownerToken, "image/jpeg", jpegData); status != 200 {
-			t.Fatal("mismatch fixture upload failed")
+		if _, status := c.request("POST", "/storage/v1/object/feed-uploads/"+intent["path"].(string), ownerToken, "image/jpeg", jpegData); status < 300 {
+			t.Fatal("Storage accepted mismatched MIME")
 		}
 		if _, status := c.rpc(ownerToken, "confirm_feed_photo", map[string]string{"requested_photo": id}); status < 300 {
 			t.Fatal("declared MIME was trusted over actual Storage metadata")
 		}
+		c.rpc(ownerToken, "cancel_feed_draft", map[string]string{"requested_post": post})
+		post, id = domain.UUID(), domain.UUID()
+		intent = reserve(post, id, "image/jpeg", 1)
+		if _, status := c.request("POST", "/storage/v1/object/feed-uploads/"+intent["path"].(string), ownerToken, "image/jpeg", jpegData); status < 300 {
+			t.Fatal("Storage accepted an underdeclared size")
+		}
+		var stored bool
+		if err := admin.QueryRow(ctx, "select exists(select 1 from storage.objects where bucket_id='feed-uploads'and name=$1)", intent["path"]).Scan(&stored); err != nil || stored {
+			t.Fatal("mismatch consumed persistent Storage outside its reservation", err)
+		}
+		// Storage may finalize through its internal database role after RLS.
+		// The actual-byte guard must still reject that privileged finalization.
+		_, err := admin.Exec(ctx, `insert into storage.objects(bucket_id,name,owner_id,metadata)values('feed-uploads',$1,$2,'{"size":2,"mimetype":"image/jpeg"}')`, intent["path"], owner)
+		sbErrorCode(t, err, "22023")
 		c.rpc(ownerToken, "cancel_feed_draft", map[string]string{"requested_post": post})
 		post = domain.UUID()
 		id = upload(post, jpegData, "image/jpeg")
@@ -504,6 +545,34 @@ func TestSupabaseLocalMedia(t *testing.T) {
 		sbExec(t, admin, "update feed.post_drafts set expires_at=statement_timestamp()-interval '1 second'where id=$1", post)
 		if _, status := c.request("POST", "/storage/v1/object/feed-uploads/"+intent["path"].(string), ownerToken, "image/jpeg", jpegData); status < 300 {
 			t.Fatal("expired draft accepted a late original")
+		}
+	})
+	t.Run("deleted_post_action_is_an_expected_race_not_a_serving_error", func(t *testing.T) {
+		post := domain.UUID()
+		if out, status := c.rpc(viewerToken, "create_feed_post", map[string]any{"requested_id": post, "requested_text": "Deletion race fixture"}); status != 200 {
+			t.Fatalf("create stale-action fixture: %d %v", status, out)
+		}
+		out, status := c.rpc(ownerToken, "get_feed_post", map[string]any{"requested_id": post})
+		if status != 200 {
+			t.Fatalf("get stale-action delivery: %d", status)
+		}
+		delivery, okay := out["delivery_id"].(string)
+		if !okay {
+			t.Fatal("missing direct delivery")
+		}
+		if _, err := f.rpc(viewer, "select to_jsonb(public.delete_feed_post($1))", post); err != nil {
+			t.Fatal(err)
+		}
+		body, status, err := (soakHTTP{c.url, c.anon, c.client}).rpc(ownerToken, "apply_feed_action", map[string]any{"requested_id": domain.UUID(), "requested_delivery": delivery, "requested_action": "like", "expected_version": 0})
+		if err != nil || !soakDeletedAction(ctx, admin, owner, delivery, []string{viewer}, status, body) {
+			t.Fatalf("deleted action not classified: status=%d error=%v", status, err)
+		}
+		if soakDeletedAction(ctx, admin, stranger, delivery, []string{viewer}, status, body) || soakDeletedAction(ctx, admin, owner, delivery, []string{owner}, status, body) {
+			t.Fatal("foreign errors were swallowed as fixture races")
+		}
+		var applied bool
+		if err := admin.QueryRow(ctx, "select exists(select 1 from feed.post_likes where user_id=$1 and post_id=$2)", owner, post).Scan(&applied); err != nil || applied {
+			t.Fatal("deleted post accepted an action", err)
 		}
 	})
 	t.Run("captions_remain_editable_and_empty_posts_rejected", func(t *testing.T) {

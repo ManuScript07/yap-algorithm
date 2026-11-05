@@ -11,7 +11,10 @@ import (
 	"yap-algorithm/internal/domain"
 )
 
-type MediaRepository struct{ pool *pgxpool.Pool }
+type MediaRepository struct {
+	pool     *pgxpool.Pool
+	workerID string // Set once during registration, before starting processors.
+}
 
 func OpenMediaRepository(ctx context.Context, dsn string, connections int32) (*MediaRepository, error) {
 	cfg, err := connectionConfig(dsn, connections)
@@ -53,8 +56,9 @@ func (r *MediaRepository) verify(ctx context.Context) error {
 		Version   int    `json:"version"`
 		Processor string `json:"processor"`
 		MaxBytes  int    `json:"max_bytes"`
+		Capacity  int    `json:"capacity_version"`
 	}
-	if json.Unmarshal(raw, &contract) != nil || contract.Version != 1 || contract.Processor != "jpeg-v1" || contract.MaxBytes != application.MaxPhotoBytes {
+	if json.Unmarshal(raw, &contract) != nil || contract.Version != 1 || contract.Processor != "jpeg-v1" || contract.MaxBytes != application.MaxPhotoBytes || contract.Capacity != 1 {
 		return errors.New("media processor contract mismatch")
 	}
 	return nil
@@ -82,7 +86,11 @@ func (r *MediaRepository) exec(ctx context.Context, sql string, args ...any) err
 
 func (r *MediaRepository) ClaimPhoto(ctx context.Context) (application.PhotoJob, bool, error) {
 	var job *application.PhotoJob
-	err := r.read(ctx, &job, "select media.claim_photo($1::uuid)", domain.UUID())
+	var identity any
+	if r.workerID != "" {
+		identity = r.workerID
+	}
+	err := r.read(ctx, &job, "select media.claim_photo($1::uuid,$2::uuid)", domain.UUID(), identity)
 	if job == nil {
 		return application.PhotoJob{}, false, err
 	}
@@ -131,3 +139,43 @@ func (r *MediaRepository) Maintenance(ctx context.Context, retry bool) error {
 }
 
 var _ application.MediaRepository = (*MediaRepository)(nil)
+
+func (r *MediaRepository) Register(ctx context.Context, concurrency int) error {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	id := domain.UUID()
+	var accepted bool
+	if err := r.pool.QueryRow(ctx, "select media.register_worker($1::uuid,$2,$3)", id, concurrency, r.pool.Config().MaxConns).Scan(&accepted); err != nil || !accepted {
+		return errors.New("media worker/connection budget is unavailable")
+	}
+	r.workerID = id
+	return nil
+}
+
+func (r *MediaRepository) Heartbeat(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	var alive bool
+	if err := r.pool.QueryRow(ctx, "select media.heartbeat_worker($1::uuid)", r.workerID).Scan(&alive); err != nil || !alive {
+		return errors.New("media worker registration lost")
+	}
+	return nil
+}
+
+func (r *MediaRepository) Unregister(ctx context.Context) error {
+	if r.workerID == "" {
+		return nil
+	}
+	return r.exec(ctx, "select media.unregister_worker($1::uuid)", r.workerID)
+}
+
+func (r *MediaRepository) Snapshot(ctx context.Context) (json.RawMessage, error) {
+	var out json.RawMessage
+	err := r.read(ctx, &out, "select media.queue_snapshot()")
+	return out, err
+}
+
+func (r *MediaRepository) PoolUsage() map[string]int64 {
+	s := r.pool.Stat()
+	return map[string]int64{"open": int64(s.TotalConns()), "acquired": int64(s.AcquiredConns()), "max": int64(s.MaxConns())}
+}

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -20,7 +21,9 @@ import (
 	"yap-algorithm/internal/application"
 )
 
-func run(ctx context.Context, concurrency int, once, retry bool) error {
+func run(parent context.Context, concurrency int, once, retry, status bool) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
 	if concurrency < 1 || concurrency > 2 {
 		return errors.New("media concurrency must be 1..2")
 	}
@@ -32,14 +35,61 @@ func run(ctx context.Context, concurrency int, once, retry bool) error {
 	if retry {
 		return repo.Maintenance(ctx, true)
 	}
+	if status {
+		snapshot, err := repo.Snapshot(ctx)
+		if err == nil {
+			slog.Info("media_queue_status", "queue", snapshot)
+		}
+		return err
+	}
 	objects, err := storage.NewMedia(os.Getenv("SUPABASE_URL"), os.Getenv("SUPABASE_PUBLISHABLE_KEY"), os.Getenv("MEDIA_STORAGE_TOKEN"))
 	if err != nil {
 		return err
 	}
+	if err := repo.Register(ctx, concurrency); err != nil {
+		return err
+	}
+	defer func() {
+		release, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer stop()
+		_ = repo.Unregister(release)
+	}()
 	processor := application.PhotoProcessor{Repository: repo, Storage: objects, Preparer: photo.Processor{}}
 	cleaner := application.MediaCleaner{Repository: repo, Storage: objects}
 	var workers sync.WaitGroup
 	var failed atomic.Bool
+	var heartbeatLost atomic.Bool
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		timer := time.NewTicker(5 * time.Second)
+		defer timer.Stop()
+		var ticks int
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				if err := repo.Heartbeat(ctx); err != nil {
+					if ctx.Err() == nil {
+						heartbeatLost.Store(true)
+					}
+					cancel()
+					return
+				}
+				ticks++
+				if ticks%6 == 0 {
+					if snapshot, err := repo.Snapshot(ctx); err == nil {
+						var memory runtime.MemStats
+						runtime.ReadMemStats(&memory)
+						slog.Info("media_queue_status", "queue", snapshot, "go_heap_bytes", memory.HeapAlloc,
+							"go_sys_bytes", memory.Sys, "goroutines", runtime.NumGoroutine(), "db_pool", repo.PoolUsage())
+					}
+				}
+			}
+		}
+	}()
+	defer func() { cancel(); <-heartbeatDone }()
 	for i := 0; i < concurrency; i++ {
 		workers.Add(1)
 		go func() {
@@ -66,19 +116,22 @@ func run(ctx context.Context, concurrency int, once, retry bool) error {
 			}
 		}()
 	}
-	if once {
-		workers.Wait()
-		if failed.Load() {
-			return errors.New("one or more media jobs failed")
-		}
-		return ctx.Err()
-	}
+	done := make(chan struct{})
+	go func() { workers.Wait(); close(done) }()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
-			workers.Wait()
+		case <-done:
+			if heartbeatLost.Load() {
+				return errors.New("media worker registration lost")
+			}
+			if once && failed.Load() {
+				return errors.New("one or more media jobs failed")
+			}
+			if parent.Err() == nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return nil
 		case <-ticker.C:
 			if err := repo.Maintenance(ctx, false); err != nil && ctx.Err() == nil {
@@ -93,10 +146,11 @@ func main() {
 	concurrency := flag.Int("concurrency", 1, "parallel photo/cleanup tasks (1..2)")
 	once := flag.Bool("once", false, "drain available jobs and exit")
 	retry := flag.Bool("retry-failed", false, "reschedule a bounded batch of exhausted jobs and exit")
+	status := flag.Bool("status", false, "print aggregate queue diagnostics and exit")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *concurrency, *once, *retry); err != nil {
+	if err := run(ctx, *concurrency, *once, *retry, *status); err != nil {
 		slog.Error("media_worker_stopped", "error", err)
 		os.Exit(1)
 	}

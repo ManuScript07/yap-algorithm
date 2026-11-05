@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.1.0
+  version: 1.2.0
   description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
     session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
     enforce optimistic action_version. Internal vectors and scores are never returned.
@@ -177,7 +177,11 @@ paths:
       description: Reserve before uploading. Reuse post/photo UUID and unchanged size/MIME on retry. Max 3 slots/draft,
         4 active drafts/user, 48 new reservations/sliding hour; draft expires in 1h. Standard Storage upload, exact
         bytes/MIME, upsert=false. No signed upload, originals download, copy/move/delete. JPEG/PNG only, 5MiB, max
-        8192 per edge and 20MP decoded. Separate 60/min quota per media operation.
+        8192 per edge and 20MP decoded. Separate 60/min quota per media operation. Global admission also bounds
+        outstanding upload promises, queued work, reserved bytes and temporary Storage debt. On 429 retry after
+        Retry-After seconds with jitter, preserving UUIDs and parameters. Exact retries of a valid reservation,
+        confirmation, status and cancellation remain available while admission is paused. Expired drafts require
+        new UUIDs; reserve/confirm/publish return PT410 photo_reservation_expired.
       requestBody:
         required: true
         content:
@@ -199,6 +203,16 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PhotoReservation'}
+        '429':
+          description: New reservations temporarily rejected; code media_capacity_exceeded, message media_temporarily_busy.
+          headers:
+            Retry-After:
+              description: Minimum delay in seconds before retrying, with jitter.
+              schema: {type: integer, minimum: 1, maximum: 300}
+          content:
+            application/json:
+              schema: {$ref: '#/components/responses/RPCError/content/application~1json/schema'}
+        '410': {$ref: '#/components/responses/RPCError'}
         default: {$ref: '#/components/responses/RPCError'}
   /rest/v1/rpc/confirm_feed_photo:
     post:
@@ -584,7 +598,7 @@ components:
         slot: {type: integer, minimum: 0, maximum: 2}
         state:
           type: string
-          enum: [waiting, queued, processing, ready, attached, rejected, failed]
+          enum: [waiting, queued, processing, ready, attached, rejected, failed, cancelled, discarded, expired]
         failure_code:
           type: [string, 'null']
           enum: [invalid_image, processing_failed, null]
@@ -602,9 +616,10 @@ components:
           upload_upsert: {type: boolean, const: false}
     DraftStatus:
       type: object
-      required: [post_id, photos, expires_at, cancelled, published]
+      required: [post_id, photos, expires_at, cancelled, published, state]
       properties:
         post_id: {type: string, format: uuid}
+        state: {type: string, enum: [active, published, cancelled, expired]}
         photos:
           type: array
           maxItems: 3
