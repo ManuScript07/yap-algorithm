@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -29,6 +31,14 @@ type soakHTTP struct {
 	base, key string
 	client    *http.Client
 }
+
+// Preserve the timeout category without logging URLs, headers or transport
+// payloads. Load reports must distinguish a timeout from an ordinary failure.
+type soakTransportFailure struct{ timeout bool }
+
+func (e soakTransportFailure) Error() string   { return "local HTTP transport failed" }
+func (e soakTransportFailure) Timeout() bool   { return e.timeout }
+func (e soakTransportFailure) Temporary() bool { return false }
 
 // Only an owned fixture that was actually deleted is an expected race. Do not
 // hide expired receipts, version conflicts, transport failures or other 4xx.
@@ -55,7 +65,8 @@ func (c soakHTTP) call(method, path, token, mime string, payload []byte) ([]byte
 	req.Header.Set("x-upsert", "false")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("local HTTP transport failed")
+		var failure net.Error
+		return nil, 0, soakTransportFailure{errors.As(err, &failure) && failure.Timeout()}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 6<<20))

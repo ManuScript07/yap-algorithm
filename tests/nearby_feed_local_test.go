@@ -115,6 +115,88 @@ func TestSupabaseLocalNearby(t *testing.T) {
 			t.Fatal("exhausted scan still has more", second)
 		}
 	})
+	t.Run("sparse_lookahead_preserves_scan_checkpoint_and_page_replay", func(t *testing.T) {
+		f := sbUsers(t, p)
+		locate(f.viewer, 55, 37)
+		rows, err := p.Query(ctx, `insert into feed.posts(id,author_id,text,audience,language,creation_request,created_at,latitude,longitude)
+ select extensions.gen_random_uuid(),$1,'Sparse candidate '||n,case when n in(1,4,7)then 'public'else 'friends'end,'en','[]',statement_timestamp()-n*interval '1 minute',55,37 from generate_series(1,8)n returning id::text,audience`, f.author)
+		if err != nil {
+			t.Fatal(err)
+		}
+		visible := map[string]bool{}
+		for rows.Next() {
+			var id, audience string
+			if err := rows.Scan(&id, &audience); err != nil {
+				t.Fatal(err)
+			}
+			if audience == "public" {
+				visible[id] = true
+			}
+		}
+		rows.Close()
+		if rows.Err() != nil {
+			t.Fatal(rows.Err())
+		}
+		first := stage5RPC(t, f.viewer, "get_nearby_feed", map[string]any{"requested_limit": 1}, 200)
+		cursor := first["next_cursor"].(map[string]any)
+		if cursor["after_position"] != float64(0) {
+			t.Fatal("lookahead consumed rows after first selected post", cursor)
+		}
+		second := stage5RPC(t, f.viewer, "get_nearby_feed", map[string]any{"requested_limit": 1, "requested_session": cursor["session_id"], "after_position": cursor["after_position"]}, 200)
+		next := second["next_cursor"].(map[string]any)
+		if next["after_position"] != float64(3) {
+			t.Fatal("sparse page checkpoint changed", next)
+		}
+		replay := stage5RPC(t, f.viewer, "get_nearby_feed", map[string]any{"requested_limit": 1, "requested_session": cursor["session_id"], "after_position": cursor["after_position"]}, 200)
+		if replay["items"].([]any)[0].(map[string]any)["delivery_id"] != second["items"].([]any)[0].(map[string]any)["delivery_id"] {
+			t.Fatal("replay replaced delivery")
+		}
+		third := stage5RPC(t, f.viewer, "get_nearby_feed", map[string]any{"requested_limit": 1, "requested_session": next["session_id"], "after_position": next["after_position"]}, 200)
+		for _, page := range []map[string]any{first, second, third} {
+			items := page["items"].([]any)
+			if len(items) != 1 {
+				t.Fatal("sparse page unfilled", page)
+			}
+			id := items[0].(map[string]any)["post"].(map[string]any)["id"].(string)
+			if !visible[id] {
+				t.Fatal("duplicate or inaccessible post", id)
+			}
+			delete(visible, id)
+		}
+		if len(visible) != 0 || third["has_more"] != false {
+			t.Fatal("sparse scan lost posts or failed to terminate")
+		}
+	})
+	t.Run("inaccessible_original_does_not_reject_other_posts_by_same_author", func(t *testing.T) {
+		f, g := sbUsers(t, p), sbUsers(t, p)
+		locate(f.viewer, 55, 37)
+		original := g.create(t, "Private original", "friends")
+		visible := post(f, "Public unrelated post", "public", 55, 37)
+		sbExec(t, p, "update feed.posts set created_at=statement_timestamp()-interval '1 hour'where id=$1", visible)
+		sbExec(t, p, `insert into feed.posts(id,author_id,text,audience,language,creation_request,is_repost,original_post_id,latitude,longitude)
+ values($1,$2,'Public caption of private original','public','en','[]',true,$3,55,37)`, domain.UUID(), f.author, original)
+		page := stage5RPC(t, f.viewer, "get_nearby_feed", map[string]any{}, 200)
+		items := page["items"].([]any)
+		if len(items) != 1 || items[0].(map[string]any)["post"].(map[string]any)["id"] != visible {
+			t.Fatal("per-post rejection leaked into author policy", page)
+		}
+	})
+	t.Run("negative_author_decisions_do_not_survive_the_rpc", func(t *testing.T) {
+		f := sbUsers(t, p)
+		locate(f.viewer, 55, 37)
+		target := post(f, "Visibility can change between requests", "public", 55, 37)
+		sbExec(t, p, "insert into private.global_account_bans(target_user_id,note)values($1,'nearby cache fixture')", f.author)
+		hidden := stage5RPC(t, f.viewer, "get_nearby_feed", map[string]any{}, 200)
+		if len(hidden["items"].([]any)) != 0 {
+			t.Fatal("banned author visible")
+		}
+		sbExec(t, p, "delete from private.global_account_bans where target_user_id=$1", f.author)
+		visible := stage5RPC(t, f.viewer, "get_nearby_feed", map[string]any{}, 200)
+		items := visible["items"].([]any)
+		if len(items) != 1 || items[0].(map[string]any)["post"].(map[string]any)["id"] != target {
+			t.Fatal("negative permission cache persisted across requests")
+		}
+	})
 	t.Run("nearby_uses_common_receipts_and_small_recommendation_source", func(t *testing.T) {
 		f := sbUsers(t, p)
 		locate(f.viewer, 55, 37)

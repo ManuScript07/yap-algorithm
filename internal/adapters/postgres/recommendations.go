@@ -216,6 +216,21 @@ func (r *RecommendationRepository) Diagnostics(ctx context.Context) (json.RawMes
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	var raw []byte
-	err := r.pool.QueryRow(ctx, "select recsys.preparation_queue_snapshot()").Scan(&raw)
-	return raw, err
+	if err := r.pool.QueryRow(ctx, "select recsys.preparation_queue_snapshot()").Scan(&raw); err != nil {
+		return nil, err
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return nil, err
+	}
+	if snapshot == nil {
+		return nil, errors.New("invalid preparation diagnostics")
+	}
+	stats := r.pool.Stat()
+	snapshot["pool"] = map[string]any{
+		"max": stats.MaxConns(), "total": stats.TotalConns(), "acquired": stats.AcquiredConns(),
+		"acquire_count": stats.AcquireCount(), "canceled_acquire_count": stats.CanceledAcquireCount(),
+		"empty_acquire_count": stats.EmptyAcquireCount(), "empty_acquire_wait_seconds": stats.EmptyAcquireWaitTime().Seconds(),
+	}
+	return json.Marshal(snapshot)
 }

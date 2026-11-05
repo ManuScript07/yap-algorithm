@@ -83,6 +83,23 @@ func TestSupabaseLocalPreparation(t *testing.T) {
 	p := stage5Pool(t)
 	ctx := context.Background()
 	repo, rec := stage5Worker(t)
+	t.Run("queue_diagnostics_include_bounded_pool_aggregates", func(t *testing.T) {
+		raw, err := rec.Diagnostics(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snapshot struct {
+			Pool struct {
+				Max   int     `json:"max"`
+				Total int     `json:"total"`
+				Wait  float64 `json:"empty_acquire_wait_seconds"`
+			} `json:"pool"`
+			Index json.RawMessage `json:"index"`
+		}
+		if json.Unmarshal(raw, &snapshot) != nil || snapshot.Pool.Max != 4 || snapshot.Pool.Total > 4 || snapshot.Pool.Wait < 0 || len(snapshot.Index) == 0 {
+			t.Fatal("invalid aggregate diagnostics")
+		}
+	})
 	t.Run("restricted_worker_rejects_unbounded_requests", func(t *testing.T) {
 		_, err := repo.ClaimBatch(ctx, "live", 9)
 		sbErrorCode(t, err, "22023")

@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
+	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -58,45 +56,7 @@ func TestSupabaseLocalPreparationLoad(t *testing.T) {
 		stage5RPC(t, user, "get_for_you_feed", map[string]int{"requested_limit": 10}, 200)
 	}
 	target := f.create(t, "Программирование на Go, безопасные базы данных и распределённые системы", "public")
-	raw, err := os.ReadFile("../.local/supabase-worker.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var config struct {
-		DSN string `json:"database_url"`
-	}
-	if json.Unmarshal(raw, &config) != nil {
-		t.Fatal("private worker config")
-	}
-	// stage5Worker validates this restricted identity and its local target.
-	stage5Worker(t)
-	binary := filepath.Join(t.TempDir(), "preparation-worker.exe")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/worker")
-	build.Dir = ".."
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("worker build: %v %s", err, output)
-	}
-	logFile, err := os.Create("../.local/stage5-load-worker.log")
-	if err != nil {
-		t.Fatal(err)
-	}
-	worker := exec.Command(binary, "-concurrency", "2", "-batch-size", "4")
-	// The worker receives neither admin credentials nor the test service key.
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if !strings.HasPrefix(name, "YAP_") && name != "DATABASE_URL" && name != "MODEL_URL" {
-			worker.Env = append(worker.Env, entry)
-		}
-	}
-	worker.Env = append(worker.Env, "DATABASE_URL="+config.DSN, "MODEL_URL=http://127.0.0.1:8091")
-	worker.Stdout, worker.Stderr = logFile, logFile
-	if err := worker.Start(); err != nil {
-		logFile.Close()
-		t.Fatal(err)
-	}
-	stopped := make(chan error, 1)
-	go func() { stopped <- worker.Wait() }()
-	t.Cleanup(func() { _ = worker.Process.Kill(); <-stopped; _ = logFile.Close() })
+	startPreparationWorker(t, "http://127.0.0.1:8091", "../.local/stage5-load-worker.log")
 	wait := func(deadline time.Time, query string, args ...any) {
 		t.Helper()
 		for time.Now().Before(deadline) {
@@ -123,8 +83,16 @@ func TestSupabaseLocalPreparationLoad(t *testing.T) {
 	defer group.Wait()
 	var mu sync.Mutex
 	var latencies []time.Duration
+	bySurface := make(map[string][]time.Duration)
 	errors := make(chan error, 510)
 	start := time.Now()
+	var memoryBefore runtime.MemStats
+	runtime.ReadMemStats(&memoryBefore)
+	if os.Getenv("YAP_FEED_TRACE") == "1" {
+		client.client.Transport = preparationTraceTransport{t, start}
+		stopTrace := tracePreparationWaits(t, p)
+		defer stopTrace()
+	}
 	// 500 arrivals/minute, bounded to eight simultaneous HTTP requests.
 	group.Add(1)
 	go func() {
@@ -142,9 +110,13 @@ func TestSupabaseLocalPreparationLoad(t *testing.T) {
 				defer func() { <-semaphore }()
 				name := []string{"get_for_you_feed", "get_friends_feed", "get_nearby_feed"}[i%3]
 				before := time.Now()
-				body, status, err := client.rpc(tokens[i%12], name, map[string]int{"requested_limit": 10})
+				// Rotate the reader assignment each round: every reader visits all
+				// three tabs instead of i%12 permanently assigning one tab to them.
+				reader := (i + i/len(readers)) % len(readers)
+				body, status, err := client.rpc(tokens[reader], name, map[string]int{"requested_limit": 10})
 				mu.Lock()
 				latencies = append(latencies, time.Since(before))
+				bySurface[name] = append(bySurface[name], time.Since(before))
 				mu.Unlock()
 				if err != nil || status != 200 {
 					errors <- fmt.Errorf("mixed read %s: status=%d error=%v", name, status, err)
@@ -181,6 +153,9 @@ func TestSupabaseLocalPreparationLoad(t *testing.T) {
 		effects = append(effects, time.Since(before))
 	}
 	group.Wait()
+	var memoryAfter runtime.MemStats
+	runtime.ReadMemStats(&memoryAfter)
+	t.Logf("load client runtime: heap_start=%d heap_end=%d sys=%d GC_cycles=%d GC_pause_total=%s", memoryBefore.HeapAlloc, memoryAfter.HeapAlloc, memoryAfter.Sys, memoryAfter.NumGC-memoryBefore.NumGC, time.Duration(memoryAfter.PauseTotalNs-memoryBefore.PauseTotalNs))
 	close(errors)
 	for err := range errors {
 		t.Error(err)
@@ -197,8 +172,20 @@ func TestSupabaseLocalPreparationLoad(t *testing.T) {
 	}
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	sort.Slice(effects, func(i, j int) bool { return effects[i] < effects[j] })
+	for _, name := range []string{"get_for_you_feed", "get_friends_feed", "get_nearby_feed"} {
+		samples := bySurface[name]
+		millis := make([]float64, len(samples))
+		for i, sample := range samples {
+			millis[i] = float64(sample) / float64(time.Millisecond)
+		}
+		summary := summarizeFeedTiming(millis)
+		t.Logf("%s first-page HTTP n=%d ms p50=%.2f p95=%.2f p99=%.2f", name, summary.Count, summary.P50, summary.P95, summary.P99)
+		if summary.Count == 0 || summary.P95 > 300 || summary.P99 > 800 {
+			t.Errorf("%s missed minimum-tier per-surface latency budget", name)
+		}
+	}
 	t.Logf("real E5 + shipped worker/2 tasks/batch4: 2000 queued backfill posts,48 cold readers; 500 mixed HTTP reads in %s p95=%s p99=%s; action-to-complete-semantic-snapshot n=%d p95=%s max=%s; backfill completed=%d scheduled users=%d", time.Since(start), latencies[474], latencies[494], len(effects), effects[11], effects[11], backfillDone, scheduledDone)
-	if time.Since(start) > 75*time.Second || latencies[474] > time.Second {
+	if time.Since(start) > 75*time.Second {
 		t.Error("mixed read latency/arrival target missed")
 	}
 }
