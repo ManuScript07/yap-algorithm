@@ -118,6 +118,7 @@ func (r *RecommendationRepository) LoadCandidates(ctx context.Context, job appli
 		Social      bool      `json:"social"`
 		Impressions int       `json:"impressions"`
 		Likes       int       `json:"likes"`
+		Reposts     int       `json:"reposts"`
 		Seen        bool      `json:"seen"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
@@ -132,7 +133,7 @@ func (r *RecommendationRepository) LoadCandidates(ctx context.Context, job appli
 		if c.Vector != "" {
 			vector = domain.ParseVector(c.Vector)
 		}
-		rows = append(rows, ranking.Candidate{ID: c.ID, AuthorID: c.Author, PostVersion: c.Version, CreatedAt: c.At, Embedding: vector, Sources: c.Sources, Social: c.Social, Impressions: c.Impressions, Likes: c.Likes, Seen: c.Seen})
+		rows = append(rows, ranking.Candidate{ID: c.ID, AuthorID: c.Author, PostVersion: c.Version, CreatedAt: c.At, Embedding: vector, Sources: c.Sources, Social: c.Social, Impressions: c.Impressions, Likes: c.Likes, Reposts: c.Reposts, Seen: c.Seen})
 	}
 	return rows, nil
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.2.0
+  version: 1.3.0
   description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
     session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
     enforce optimistic action_version. Internal vectors and scores are never returned.
@@ -433,6 +433,447 @@ paths:
                 - {type: 'null'}
                 - {$ref: '#/components/schemas/DirectPost'}
         default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/create_feed_comment:
+    post:
+      operationId: create_feed_comment
+      description: Up to 200 Unicode characters; nonblank. requested_reply_to may address a root or any reply in
+        that same post. Retry with the identical UUID and body. 30 new comments/minute, 500/day; retries do not
+        consume the creation allowance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_post
+              - requested_text
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_post:
+                  type: string
+                  format: uuid
+                requested_text:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                requested_reply_to:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/edit_feed_comment:
+    post:
+      operationId: edit_feed_comment
+      description: Owner only; optimistic content version. New intent gets a new UUID; retry preserves body and
+        ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_comment
+              - expected_version
+              - requested_text
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_comment:
+                  type: string
+                  format: uuid
+                expected_version:
+                  type: integer
+                  minimum: 1
+                requested_text:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentMutation'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/delete_feed_comment:
+    post:
+      operationId: delete_feed_comment
+      description: Owner only; leaves a tombstone and preserves flat replies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_comment
+              - expected_version
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_comment:
+                  type: string
+                  format: uuid
+                expected_version:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentMutation'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/set_feed_comment_liked:
+    post:
+      operationId: set_feed_comment_liked
+      description: Set desired state, never toggle blindly. expected_version is the current comment action_version;
+        also send both observed content versions. Reconcile HTTP 409 before a new intent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_comment
+              - requested_liked
+              - expected_version
+              - expected_comment_version
+              - expected_post_version
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_comment:
+                  type: string
+                  format: uuid
+                requested_liked:
+                  type: boolean
+                expected_version:
+                  type: integer
+                  minimum: 0
+                expected_comment_version:
+                  type: integer
+                  minimum: 1
+                expected_post_version:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentReaction'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/get_feed_comments:
+    post:
+      operationId: get_feed_comments
+      description: Pages live 20 minutes. Omit requested_session and use after_position=-1 for a new page session.
+        Continue using next_cursor and the same page size/context. Issued page IDs replay unchanged; remaining roots
+        are chosen by current popularity without duplicates, not a frozen global ranking. New comments after session
+        creation require a new session. Current bans/deletion/blocks always mask content.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_post
+              properties:
+                requested_post:
+                  type: string
+                  format: uuid
+                requested_root:
+                  description: When set, requested_sort must be old; prefer get_feed_comment_replies.
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                requested_sort:
+                  type: string
+                  enum:
+                  - popular
+                  - old
+                  - new
+                  default: popular
+                requested_session:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                after_position:
+                  type: integer
+                  minimum: -1
+                  default: -1
+                requested_limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 30
+                  default: 20
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentPage'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/get_feed_comment_replies:
+    post:
+      operationId: get_feed_comment_replies
+      description: Pages live 20 minutes. Omit requested_session and use after_position=-1 for a new page session.
+        Continue using next_cursor and the same page size/context. Issued page IDs replay unchanged; remaining roots
+        are chosen by current popularity without duplicates, not a frozen global ranking. New comments after session
+        creation require a new session. Current bans/deletion/blocks always mask content. Replies are chronological,
+        oldest first. No nested reply pages.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_post
+              - requested_root
+              properties:
+                requested_post:
+                  type: string
+                  format: uuid
+                requested_root:
+                  type: string
+                  format: uuid
+                requested_session:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                after_position:
+                  type: integer
+                  minimum: -1
+                  default: -1
+                requested_limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 30
+                  default: 20
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentPage'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/get_friends_feed:
+    post:
+      operationId: get_friends_feed
+      description: All current mutual friends, reverse chronology, including their plain reposts and quotes; deduplicate
+        original IDs. Stable issued pages, 20-minute session, maximum 30/page. Current friendship and content access
+        are rechecked. Interest reset invalidates the session (409). Feed receipts use surface friends and the existing
+        telemetry/action RPCs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: []
+              properties:
+                requested_session:
+                  oneOf:
+                  - type: 'null'
+                  - type: string
+                    format: uuid
+                  default: null
+                after_position:
+                  type: integer
+                  minimum: -1
+                  default: -1
+                requested_limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 30
+                  default: 20
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FriendsPage'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/create_feed_repost:
+    post:
+      operationId: create_feed_repost
+      description: Empty text creates a plain reference without a new post or embedding; nonempty text creates a
+        quote post with its own caption embedding and live original. One active plain repost per author/original.
+        At most four reference edges. Posts, quotes and plain reposts share 12 creations/hour; deletion does not
+        restore allowance. Quotes have no own photos in this version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_original
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_original:
+                  type: string
+                  format: uuid
+                requested_text:
+                  type: string
+                  maxLength: 1000
+                  default: ''
+                requested_audience:
+                  type: string
+                  enum:
+                  - public
+                  - friends
+                  default: public
+                requested_language:
+                  type: string
+                  enum:
+                  - ru
+                  - en
+                  default: ru
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepostResult'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/delete_feed_repost:
+    post:
+      operationId: delete_feed_repost
+      description: Undo the owned repost using its ID/version (my_repost for a plain repost). Also soft-deletes
+        a quote post. Idempotent request UUID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_repost
+              - expected_version
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_repost:
+                  type: string
+                  format: uuid
+                expected_version:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentMutation'
+        default:
+          $ref: '#/components/responses/RPCError'
+  /rest/v1/rpc/submit_feed_content_report:
+    post:
+      operationId: submit_feed_content_report
+      description: 'Existing private moderator queue with a content snapshot. Sender hides target; no automatic
+        global ban. Separate limits: posts 20/day, comments 30/day, each 5/minute; same target cooldown seven days.
+        User reports keep their existing separate allowance. Reports on own content are rejected; comment reports
+        are not negative semantic training labels.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - requested_id
+              - requested_type
+              - requested_content
+              - requested_reason
+              properties:
+                requested_id:
+                  type: string
+                  format: uuid
+                requested_type:
+                  type: string
+                  enum:
+                  - post
+                  - comment
+                requested_content:
+                  type: string
+                  format: uuid
+                requested_reason:
+                  type: string
+                  enum:
+                  - spam
+                  - scam
+                  - pornography
+                  - other
+      responses:
+        '200':
+          description: Current result or safe acknowledgement for an identical request retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportResult'
+        default:
+          $ref: '#/components/responses/RPCError'
 components:
   securitySchemes:
     apiKey: {type: apiKey, in: header, name: apikey}
@@ -536,7 +977,7 @@ components:
         less_similar: {type: boolean}
     PostBase:
       type: object
-      required: [id, author_id, text, audience, language, version, created_at, updated_at, photos, location]
+      required: [id, author_id, text, audience, language, version, created_at, updated_at, photos, location, is_repost, comment_count, repost_count, my_repost, reposted_by]
       properties:
         id: {type: string, format: uuid}
         author_id: {type: string, format: uuid}
@@ -547,7 +988,7 @@ components:
         language:
           type: string
           enum: [ru, en]
-        version: {type: integer, minimum: 1, description: Content version, distinct from action_version.: null}
+        version: {type: integer, minimum: 1, description: Content version distinct from action_version.}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         photos:
@@ -565,6 +1006,54 @@ components:
               longitude: {type: number, minimum: -180, maximum: 180}
             description: Exact coordinates only for the author or currently permitted friends; other viewers get
               only nearby=true within 50km. Viewer position older than 12h is ignored.
+        is_repost:
+          type: boolean
+        original:
+          $ref: '#/components/schemas/PostBase'
+          description: Only for quotes; recursive live original, maximum four reference edges. Access is rechecked for
+            every ancestor.
+        comment_count:
+          type: integer
+          minimum: 0
+        repost_count:
+          type: integer
+          minimum: 0
+        my_repost:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              version:
+                type: integer
+                minimum: 1
+            required:
+            - id
+            - version
+        reposted_by:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            properties:
+              repost_id:
+                type: string
+                format: uuid
+              author_id:
+                type: string
+                format: uuid
+              username:
+                type: string
+              created_at:
+                type: string
+                format: date-time
+            required:
+            - repost_id
+            - author_id
+            - username
+            - created_at
     DirectPost:
       allOf:
       - {$ref: '#/components/schemas/Post'}
@@ -627,3 +1116,304 @@ components:
         expires_at: {type: string, format: date-time}
         cancelled: {type: boolean}
         published: {type: boolean}
+    CommentAuthor:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        display_name:
+          type:
+          - string
+          - 'null'
+      required:
+      - id
+      - username
+      - display_name
+    Comment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        post_id:
+          type: string
+          format: uuid
+        root_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        post_version:
+          type: integer
+          minimum: 1
+        action_version:
+          type: integer
+          minimum: 0
+        text:
+          type:
+          - string
+          - 'null'
+          maxLength: 200
+        author:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/CommentAuthor'
+        state:
+          type: string
+          enum:
+          - active
+          - deleted
+          - unavailable
+        reply_to:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              comment_id:
+                type: string
+                format: uuid
+              user_id:
+                type: string
+                format: uuid
+              username:
+                type: string
+            required:
+            - comment_id
+            - user_id
+            - username
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        like_count:
+          type: integer
+          minimum: 0
+        reply_count:
+          type: integer
+          minimum: 0
+        liked:
+          type: boolean
+      required:
+      - id
+      - post_id
+      - root_id
+      - version
+      - post_version
+      - action_version
+      - text
+      - author
+      - state
+      - reply_to
+      - created_at
+      - updated_at
+      - like_count
+      - reply_count
+      - liked
+      description: 'Flat thread: root_id groups replies; reply_to supplies the addressed username without embedding
+        it in text. Tombstones keep IDs and replies but mask text/author. Use version for edits, action_version for
+        likes and post_version for the observed parent.'
+    SocialCursor:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        after_position:
+          type: integer
+          minimum: 0
+      required:
+      - session_id
+      - after_position
+    CommentPage:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        expires_at:
+          type: string
+          format: date-time
+        has_more:
+          type: boolean
+        next_cursor:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/SocialCursor'
+        post_id:
+          type: string
+          format: uuid
+        root_id:
+          oneOf:
+          - type: 'null'
+          - type: string
+            format: uuid
+        sort:
+          type: string
+          enum:
+          - popular
+          - old
+          - new
+        items:
+          type: array
+          maxItems: 30
+          items:
+            $ref: '#/components/schemas/Comment'
+      required:
+      - session_id
+      - expires_at
+      - has_more
+      - next_cursor
+      - post_id
+      - root_id
+      - sort
+      - items
+    FriendsPage:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        expires_at:
+          type: string
+          format: date-time
+        has_more:
+          type: boolean
+        next_cursor:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/SocialCursor'
+        items:
+          type: array
+          maxItems: 30
+          items:
+            type: object
+            properties:
+              position:
+                type: integer
+                minimum: 0
+              delivery_id:
+                type: string
+                format: uuid
+              delivery_expires_at:
+                type: string
+                format: date-time
+              post:
+                $ref: '#/components/schemas/Post'
+            required:
+            - position
+            - delivery_id
+            - delivery_expires_at
+            - post
+      required:
+      - session_id
+      - expires_at
+      - has_more
+      - next_cursor
+      - items
+    CommentMutation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        request_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        deleted:
+          type: boolean
+        replayed:
+          type: boolean
+      required:
+      - id
+      - request_id
+      - version
+      - deleted
+      - replayed
+    CommentReaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        request_id:
+          type: string
+          format: uuid
+        action_version:
+          type: integer
+          minimum: 1
+        liked:
+          type: boolean
+        changed:
+          type: boolean
+        replayed:
+          type: boolean
+      required:
+      - id
+      - request_id
+      - action_version
+      - liked
+      - changed
+      - replayed
+    RepostResult:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        post_id:
+          oneOf:
+          - type: 'null'
+          - type: string
+            format: uuid
+        original_post_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        is_quote:
+          type: boolean
+      required:
+      - id
+      - post_id
+      - original_post_id
+      - version
+      - created_at
+      - is_quote
+    ReportResult:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        target_type:
+          type: string
+          enum:
+          - post
+          - comment
+        target_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
+      required:
+      - request_id
+      - target_type
+      - target_id
+      - created_at
+      - replayed

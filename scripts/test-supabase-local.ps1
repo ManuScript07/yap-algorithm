@@ -6,7 +6,7 @@ param(
     [switch]$WithMedia,
     [switch]$WithSoak,
     [ValidateRange(1,120)][int]$SoakMinutes = 60,
-    [string]$Run = '^TestSupabaseLocal(Pipeline|Media|MediaCapacity|MediaDBOutage)$'
+    [string]$Run = '^TestSupabaseLocal(Pipeline|Media|MediaCapacity|MediaDBOutage|Social|SocialSecurity|SocialLoad)$'
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
