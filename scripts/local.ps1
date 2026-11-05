@@ -47,7 +47,7 @@ switch ($Action) {
             Database-SQL (Get-Content -Raw -Encoding utf8 tests/fixtures/core.sql) $database
         }
         Database-SQL 'create table if not exists private.fixture_migrations(version text primary key,sha256 text not null);' $database
-        foreach ($migration in Get-ChildItem supabase/migrations/*.sql | Sort-Object Name) {
+        foreach ($migration in Get-ChildItem tests/fixtures/migrations/*.sql | Sort-Object Name) {
             $version = $migration.BaseName
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $migration.FullName).Hash
             $applied = Database-SQL "select sha256 from private.fixture_migrations where version='$version';" $database

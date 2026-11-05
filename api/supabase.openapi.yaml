@@ -1,25 +1,22 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.0.0
-  description: >-
-    Internal worker has no client listener. Use these RPCs through the existing
-    Supabase SDK and account session. UUIDs and versions must survive network
-    retries. Serialize settings mutations; post actions additionally enforce
-    optimistic action_version. Internal vectors and scores are never returned.
+  version: 1.1.0
+  description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
+    session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
+    enforce optimistic action_version. Internal vectors and scores are never returned.
 servers:
-  - url: http://127.0.0.1:54321
+- {url: 'http://127.0.0.1:54321'}
 security:
-  - apiKey: []
-    bearer: []
+- apiKey: []
+  bearer: []
 paths:
   /rest/v1/rpc/get_for_you_feed:
     post:
       operationId: getForYouFeed
-      description: >-
-        First page omits requested_session and uses after_position=-1. Continue
-        with next_cursor values. A session's order is immutable; current access
-        is rechecked on every page. After a reset/expiry start a new session.
+      description: First page omits requested_session and uses after_position=-1. Continue with next_cursor values.
+        A session's order is immutable; current access is rechecked on every page. After a reset/expiry start a
+        new session.
       requestBody:
         required: true
         content:
@@ -28,7 +25,10 @@ paths:
               type: object
               additionalProperties: false
               properties:
-                requested_session: {type: [string, 'null'], format: uuid, default: null}
+                requested_session:
+                  type: [string, 'null']
+                  format: uuid
+                  default: null
                 after_position: {type: integer, minimum: -1, maximum: 199, default: -1}
                 requested_limit: {type: integer, minimum: 1, maximum: 30, default: 20}
       responses:
@@ -41,13 +41,11 @@ paths:
   /rest/v1/rpc/record_feed_events:
     post:
       operationId: recordFeedEvents
-      description: >-
-        Send impression before dwell/open_post. Each impression needs at least
-        1000ms and 50% visibility; server elapsed time must also allow it. Dwell
-        active_ms is cumulative for a delivery, capped at 120000, not a delta.
-        Store event_id and the unchanged body until acknowledgement. Stale
-        epochs/text versions and expired owned deliveries are ignored. Unknown
-        or foreign deliveries are validation errors and roll back the batch.
+      description: Send impression before dwell/open_post. Each impression needs at least 1000ms and 50% visibility;
+        server elapsed time must also allow it. Dwell active_ms is cumulative for a delivery, capped at 120000,
+        not a delta. Store event_id and the unchanged body until acknowledgement. Stale epochs/text versions and
+        expired owned deliveries are ignored. Unknown or foreign deliveries are validation errors and roll back
+        the batch.
       requestBody:
         required: true
         content:
@@ -79,11 +77,9 @@ paths:
   /rest/v1/rpc/apply_feed_action:
     post:
       operationId: applyFeedAction
-      description: >-
-        Use delivery_id from a served post and expected_version=post.action_version.
-        New user intent gets a new requested_id. A transport retry reuses the
-        exact original ID/body/version. A 409 version conflict needs reconciliation
-        with current server state; never replay an older intent with a newer version.
+      description: Use delivery_id from a served post and expected_version=post.action_version. New user intent
+        gets a new requested_id. A transport retry reuses the exact original ID/body/version. A 409 version conflict
+        needs reconciliation with current server state; never replay an older intent with a newer version.
       requestBody:
         required: true
         content:
@@ -95,7 +91,9 @@ paths:
               properties:
                 requested_id: {type: string, format: uuid}
                 requested_delivery: {type: string, format: uuid}
-                requested_action: {type: string, enum: [like, unlike, less_similar, undo_less_similar]}
+                requested_action:
+                  type: string
+                  enum: [like, unlike, less_similar, undo_less_similar]
                 expected_version: {type: integer, format: int64, minimum: 0}
       responses:
         '200':
@@ -126,10 +124,8 @@ paths:
   /rest/v1/rpc/reset_recommendation_interests:
     post:
       operationId: resetRecommendationInterests
-      description: >-
-        Advances the interest epoch, invalidating old sessions and delayed
-        telemetry. Preserves explicit hidden authors, blocks and visible likes.
-        Retry with the same requested_id to avoid performing another reset.
+      description: Advances the interest epoch, invalidating old sessions and delayed telemetry. Preserves explicit
+        hidden authors, blocks and visible likes. Retry with the same requested_id to avoid performing another reset.
       requestBody:
         required: true
         content:
@@ -154,7 +150,10 @@ paths:
               type: object
               additionalProperties: false
               properties:
-                after_author: {type: [string, 'null'], format: uuid, default: null}
+                after_author:
+                  type: [string, 'null']
+                  format: uuid
+                  default: null
                 requested_limit: {type: integer, minimum: 1, maximum: 100, default: 30}
       responses:
         '200':
@@ -165,8 +164,260 @@ paths:
                 type: object
                 required: [author_ids, next_cursor]
                 properties:
-                  author_ids: {type: array, items: {type: string, format: uuid}}
-                  next_cursor: {type: [string, 'null'], format: uuid}
+                  author_ids:
+                    type: array
+                    items: {type: string, format: uuid}
+                  next_cursor:
+                    type: [string, 'null']
+                    format: uuid
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/reserve_feed_photo:
+    post:
+      operationId: reserveFeedPhoto
+      description: Reserve before uploading. Reuse post/photo UUID and unchanged size/MIME on retry. Max 3 slots/draft,
+        4 active drafts/user, 48 new reservations/sliding hour; draft expires in 1h. Standard Storage upload, exact
+        bytes/MIME, upsert=false. No signed upload, originals download, copy/move/delete. JPEG/PNG only, 5MiB, max
+        8192 per edge and 20MP decoded. Separate 60/min quota per media operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_post, requested_photo, requested_bytes, requested_mime]
+              properties:
+                requested_post: {type: string, format: uuid}
+                requested_photo: {type: string, format: uuid}
+                requested_bytes: {type: integer, minimum: 1, maximum: 5242880}
+                requested_mime:
+                  type: string
+                  enum: [image/jpeg, image/png]
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PhotoReservation'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/confirm_feed_photo:
+    post:
+      operationId: confirmFeedPhoto
+      description: After Storage upload, check actual metadata/ownership and queue validation. Idempotent. Poll
+        status with backoff until ready.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_photo]
+              properties:
+                requested_photo: {type: string, format: uuid}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PhotoStatus'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/get_feed_photo_status:
+    post:
+      operationId: getFeedPhotoStatus
+      description: Owner-only. Keep local preview and poll with backoff. Rejected content requires a corrected new
+        draft; failed processing requires operator recovery. Expiration applies even if the last returned state
+        was ready.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_post]
+              properties:
+                requested_post: {type: string, format: uuid}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DraftStatus'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/cancel_feed_draft:
+    post:
+      operationId: cancelFeedDraft
+      description: Idempotently cancel an unpublished draft. Access is revoked immediately; physical cleanup is
+        asynchronous.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_post]
+              properties:
+                requested_post: {type: string, format: uuid}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {type: 'null'}
+        default: {$ref: '#/components/responses/RPCError'}
+        '204': {description: Success; no body.}
+  /rest/v1/rpc/publish_feed_post:
+    post:
+      operationId: publishFeedPost
+      description: Publish selected ready photos using the reserved draft ID. Photo array order is permanent. Empty
+        text requires a photo. Optional location belongs to the publication, independent of nearby people visibility.
+        Max 12 new posts/sliding hour, including soft-deleted. A transport retry preserves original ID and full
+        body, including photo order/location.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_id]
+              properties:
+                requested_id: {type: string, format: uuid}
+                requested_text: {type: string, maxLength: 1000, default: ''}
+                requested_audience:
+                  type: string
+                  enum: [public, friends]
+                  default: public
+                requested_language:
+                  type: string
+                  enum: [ru, en]
+                  default: ru
+                requested_photos:
+                  type: array
+                  maxItems: 3
+                  uniqueItems: true
+                  items: {type: string, format: uuid}
+                  default: []
+                requested_location:
+                  oneOf:
+                  - {type: 'null'}
+                  - type: object
+                    required: [latitude, longitude]
+                    properties:
+                      latitude: {type: number, minimum: -90, maximum: 90}
+                      longitude: {type: number, minimum: -180, maximum: 180}
+                    additionalProperties: false
+                  default: null
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PostBase'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/create_feed_post:
+    post:
+      operationId: createFeedPost
+      description: Compatible text-only RPC. Use publish_feed_post for photos/location. A transport retry reuses
+        original ID/body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_id, requested_text]
+              properties:
+                requested_id: {type: string, format: uuid}
+                requested_text: {type: string, maxLength: 1000, minLength: 1}
+                requested_audience:
+                  type: string
+                  enum: [public, friends]
+                  default: public
+                requested_language:
+                  type: string
+                  enum: [ru, en]
+                  default: ru
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PostBase'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/edit_feed_post:
+    post:
+      operationId: editFeedPost
+      description: Edit text only. Empty text requires an attached photo. On 40001/post_version_conflict refetch;
+        never silently replay old intent with a new version. Photos and publication location remain fixed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_id, expected_version, requested_text]
+              properties:
+                requested_id: {type: string, format: uuid}
+                expected_version: {type: integer, minimum: 1}
+                requested_text: {type: string, maxLength: 1000}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PostBase'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/delete_feed_post:
+    post:
+      operationId: deleteFeedPost
+      description: Idempotently soft-delete own post. Media access is revoked immediately; physical cleanup is asynchronous.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_id]
+              properties:
+                requested_id: {type: string, format: uuid}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema: {type: 'null'}
+        default: {$ref: '#/components/responses/RPCError'}
+        '204': {description: Success; no body.}
+  /rest/v1/rpc/get_feed_post:
+    post:
+      operationId: getFeedPost
+      description: Checked direct read; null if unavailable. Supplies a direct delivery for feedback. Authors hidden
+        from recommendations remain directly accessible if otherwise permitted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requested_id]
+              properties:
+                requested_id: {type: string, format: uuid}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful checked RPC.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - {type: 'null'}
+                - {$ref: '#/components/schemas/DirectPost'}
         default: {$ref: '#/components/responses/RPCError'}
 components:
   securitySchemes:
@@ -174,16 +425,12 @@ components:
     bearer: {type: http, scheme: bearer, bearerFormat: JWT}
   responses:
     RPCError:
-      description: >-
-        PostgREST error object: code/message/details/hint. PT409 with
-        feed_action_version_conflict requires state reconciliation; PT409
-        feed_session_invalidated and PT410 feed_session_expired require a new
-        session; PT404 is an unknown/foreign session. 23505 means request/event
-        ID reused with different data. 22023 covers invalid/expired deliveries
-        and malformed telemetry. 42901 is the application's quota error code
-        (do not rely on HTTP 429). Existing account-ban/deletion errors retain
-        their shared YapChat contract. Network/503 errors preserve the last
-        permitted cache; they do not by themselves mean logout.
+      description: 'PostgREST error object: code/message/details/hint. PT409 with feed_action_version_conflict requires
+        state reconciliation; PT409 feed_session_invalidated and PT410 feed_session_expired require a new session;
+        PT404 is an unknown/foreign session. 23505 means request/event ID reused with different data. 22023 covers
+        invalid/expired deliveries and malformed telemetry. 42901 is the application''s quota error code (do not
+        rely on HTTP 429). Existing account-ban/deletion errors retain their shared YapChat contract. Network/503
+        errors preserve the last permitted cache; they do not by themselves mean logout.'
       content:
         application/json:
           schema:
@@ -192,23 +439,19 @@ components:
             properties:
               code: {type: string}
               message: {type: string}
-              details: {type: [string, 'null']}
-              hint: {type: [string, 'null']}
+              details:
+                type: [string, 'null']
+              hint:
+                type: [string, 'null']
   schemas:
     Post:
-      type: object
-      required: [id, author_id, text, audience, language, version, action_version, liked, created_at, updated_at]
-      properties:
-        id: {type: string, format: uuid}
-        author_id: {type: string, format: uuid}
-        text: {type: string, maxLength: 1000}
-        audience: {type: string, enum: [public, friends]}
-        language: {type: string, enum: [ru, en]}
-        version: {type: integer, minimum: 1, description: Content version, distinct from action_version.}
-        action_version: {type: integer, format: int64, minimum: 0}
-        liked: {type: boolean}
-        created_at: {type: string, format: date-time}
-        updated_at: {type: string, format: date-time}
+      allOf:
+      - {$ref: '#/components/schemas/PostBase'}
+      - type: object
+        required: [action_version, liked]
+        properties:
+          action_version: {type: integer, format: int64, minimum: 0}
+          liked: {type: boolean}
     FeedPage:
       type: object
       required: [contract_version, session_id, items, next_cursor, has_more, expires_at, model, refresh]
@@ -226,15 +469,18 @@ components:
               delivery_id: {type: string, format: uuid}
               delivery_expires_at: {type: string, format: date-time}
               post: {$ref: '#/components/schemas/Post'}
-              reasons: {type: array, items: {type: string}, description: Stable reason IDs; ignore unfamiliar IDs.}
+              reasons:
+                type: array
+                items: {type: string}
+                description: Stable reason IDs; ignore unfamiliar IDs.
         next_cursor:
           oneOf:
-            - {type: 'null'}
-            - type: object
-              required: [session_id, after_position]
-              properties:
-                session_id: {type: string, format: uuid}
-                after_position: {type: integer, minimum: 0, maximum: 199}
+          - {type: 'null'}
+          - type: object
+            required: [session_id, after_position]
+            properties:
+              session_id: {type: string, format: uuid}
+              after_position: {type: integer, minimum: 0, maximum: 199}
         has_more: {type: boolean}
         expires_at: {type: string, format: date-time}
         model: {type: string, description: fallback-v1 or personalized-v1; allow future versions.}
@@ -242,10 +488,14 @@ components:
           type: object
           required: [status, revision, processed_revision, prepared_at]
           properties:
-            status: {type: string, enum: [fresh, queued, retrying, failed]}
+            status:
+              type: string
+              enum: [fresh, queued, retrying, failed]
             revision: {type: integer, format: int64}
             processed_revision: {type: integer, format: int64}
-            prepared_at: {type: [string, 'null'], format: date-time}
+            prepared_at:
+              type: [string, 'null']
+              format: date-time
     Event:
       type: object
       additionalProperties: false
@@ -253,7 +503,9 @@ components:
       properties:
         event_id: {type: string, format: uuid}
         delivery_id: {type: string, format: uuid}
-        kind: {type: string, enum: [impression, dwell, open_post]}
+        kind:
+          type: string
+          enum: [impression, dwell, open_post]
         visible_ms: {type: integer, minimum: 1000, maximum: 120000}
         visible_fraction: {type: number, minimum: 0.5, maximum: 1}
         active_ms: {type: integer, minimum: 0, maximum: 120000}
@@ -268,3 +520,95 @@ components:
         action_version: {type: integer, format: int64}
         liked: {type: boolean}
         less_similar: {type: boolean}
+    PostBase:
+      type: object
+      required: [id, author_id, text, audience, language, version, created_at, updated_at, photos, location]
+      properties:
+        id: {type: string, format: uuid}
+        author_id: {type: string, format: uuid}
+        text: {type: string, maxLength: 1000}
+        audience:
+          type: string
+          enum: [public, friends]
+        language:
+          type: string
+          enum: [ru, en]
+        version: {type: integer, minimum: 1, description: Content version, distinct from action_version.: null}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        photos:
+          type: array
+          maxItems: 3
+          items: {$ref: '#/components/schemas/Photo'}
+        location:
+          oneOf:
+          - {type: 'null'}
+          - type: object
+            required: [nearby]
+            properties:
+              nearby: {type: boolean}
+              latitude: {type: number, minimum: -90, maximum: 90}
+              longitude: {type: number, minimum: -180, maximum: 180}
+            description: Exact coordinates only for the author or currently permitted friends; other viewers get
+              only nearby=true within 50km. Viewer position older than 12h is ignored.
+    DirectPost:
+      allOf:
+      - {$ref: '#/components/schemas/Post'}
+      - type: object
+        required: [delivery_id, delivery_expires_at, less_similar]
+        properties:
+          delivery_id: {type: string, format: uuid}
+          delivery_expires_at: {type: string, format: date-time}
+          less_similar: {type: boolean}
+    Photo:
+      type: object
+      required: [id, bucket, path, thumbnail_path, width, height, bytes, sha256, mime]
+      properties:
+        id: {type: string, format: uuid}
+        bucket: {type: string, const: feed-media}
+        path: {type: string}
+        thumbnail_path: {type: string}
+        width: {type: integer, minimum: 1, maximum: 2048}
+        height: {type: integer, minimum: 1, maximum: 2048}
+        bytes: {type: integer, minimum: 1, maximum: 5242880}
+        sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        mime: {type: string, const: image/jpeg}
+      description: Use Storage authenticated download with the current account JWT. No public/signed URLs. Full
+        image max edge 2048, preview 512. Immutable paths identify cached bytes; purge account-scoped cache after
+        logout/access revocation.
+    PhotoStatus:
+      type: object
+      required: [id, slot, state, failure_code]
+      properties:
+        id: {type: string, format: uuid}
+        slot: {type: integer, minimum: 0, maximum: 2}
+        state:
+          type: string
+          enum: [waiting, queued, processing, ready, attached, rejected, failed]
+        failure_code:
+          type: [string, 'null']
+          enum: [invalid_image, processing_failed, null]
+    PhotoReservation:
+      allOf:
+      - {$ref: '#/components/schemas/PhotoStatus'}
+      - type: object
+        required: [post_id, bucket, path, expires_at, max_bytes, upload_upsert]
+        properties:
+          post_id: {type: string, format: uuid}
+          bucket: {type: string, const: feed-uploads}
+          path: {type: string}
+          expires_at: {type: string, format: date-time}
+          max_bytes: {type: integer, const: 5242880}
+          upload_upsert: {type: boolean, const: false}
+    DraftStatus:
+      type: object
+      required: [post_id, photos, expires_at, cancelled, published]
+      properties:
+        post_id: {type: string, format: uuid}
+        photos:
+          type: array
+          maxItems: 3
+          items: {$ref: '#/components/schemas/PhotoStatus'}
+        expires_at: {type: string, format: date-time}
+        cancelled: {type: boolean}
+        published: {type: boolean}
