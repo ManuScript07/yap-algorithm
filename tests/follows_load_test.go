@@ -115,7 +115,11 @@ func TestSupabaseLocalFollowsLoad(t *testing.T) {
 	}
 	for name, latency := range byRPC {
 		sort.Slice(latency, func(i, j int) bool { return latency[i] < latency[j] })
-		t.Logf("%s: %d requests, p95=%s p99=%s max=%s", name, len(latency), latency[len(latency)*95/100-1], latency[len(latency)*99/100-1], latency[len(latency)-1])
+		p95, p99 := latency[len(latency)*95/100-1], latency[len(latency)*99/100-1]
+		t.Logf("%s: %d requests, p95=%s p99=%s max=%s", name, len(latency), p95, p99, latency[len(latency)-1])
+		if p95 > 300*time.Millisecond || p99 > 800*time.Millisecond {
+			t.Errorf("%s latency budget missed: p95=%s p99=%s", name, p95, p99)
+		}
 	}
 	t.Logf("500 mixed real HTTP requests, <=8 concurrent: %s", elapsed)
 	if elapsed > 75*time.Second {

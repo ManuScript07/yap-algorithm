@@ -579,7 +579,7 @@ func sbRecommendations(t *testing.T, admin *pgxpool.Pool, index *postgres.IndexR
  select $1,1,1,'synthetic',$2,statement_timestamp()-interval '3 hours',statement_timestamp()-interval '2 hours'from generate_series(1,100)`, f.viewer, sbModel)
 		sbExec(t, admin, `insert into recsys.deliveries(user_id,post_id,post_version,epoch,surface,model,embedding_model,delivered_at,valid_until)
  select $1,$2,1,1,'direct','synthetic',$3,statement_timestamp()-interval '31 days',statement_timestamp()-interval '30 days'from generate_series(1,300)`, f.viewer, posts[0], sbModel)
-		sbExec(t, admin, `insert into recsys.telemetry_events(user_id,id,delivery_id,payload)select user_id,extensions.gen_random_uuid(),id,'{}'from recsys.deliveries where user_id=$1`, f.viewer)
+		sbExec(t, admin, `insert into recsys.telemetry_events(user_id,id,delivery_id,payload)select user_id,extensions.gen_random_uuid(),id,'{"kind":"impression"}'from recsys.deliveries where user_id=$1`, f.viewer)
 		sbExec(t, admin, `insert into recsys.action_requests(user_id,id,payload,response,created_at)select $1,extensions.gen_random_uuid(),'[]','{}',statement_timestamp()-interval '31 days'from generate_series(1,1001)`, f.viewer)
 		if err := repo.CleanupRecommendations(ctx); err != nil {
 			t.Fatal(err)

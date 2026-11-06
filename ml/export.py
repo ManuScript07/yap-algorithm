@@ -1,4 +1,9 @@
-"""Export point-in-time features and matured proxy labels from the local fixture."""
+"""Legacy fixture-only proxy export, not the production feedback-v1 dataset.
+
+The historical max/any proxy cannot model cancellations or comment report targets.
+Keep it isolated for prototype comparisons; current facts use ml/feedback.py and
+require the separate point-in-time dataset pipeline before model selection.
+"""
 import argparse
 import json
 from pathlib import Path

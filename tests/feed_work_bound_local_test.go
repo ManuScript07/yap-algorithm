@@ -2,24 +2,36 @@ package tests
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// Check a work bound, not a particular plan/index or a flaky elapsed time. The
-// adversarial session disables index/hash/merge joins and forces cached plans;
-// permission checks must still depend on page size, not every stored post.
-func TestSupabaseLocalFeedWorkBound(t *testing.T) {
-	stage5Pool(t) // Explicit local Supabase URL/port and integration opt-in.
+func runFeedWorkSQL(t *testing.T, sql string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	endpoint, err := exec.CommandContext(ctx, "docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}").Output()
 	if err != nil || (!strings.HasPrefix(string(endpoint), "npipe:") && !strings.HasPrefix(string(endpoint), "unix:")) {
 		t.Fatal("local Docker socket required")
 	}
-	sql := `begin;
+
+	command := exec.CommandContext(ctx, "docker", "exec", "-i", "supabase_db_Yap_chat", "psql", "-U", "supabase_admin", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-q")
+	command.Stdin = strings.NewReader(sql)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bounded SQL work regression: %v %s", err, output)
+	}
+	t.Logf("%s", output)
+}
+
+// Permission work must depend on page size even under adverse cached plans.
+func TestSupabaseLocalFeedWorkBound(t *testing.T) {
+	stage5Pool(t)
+	runFeedWorkSQL(t, `begin;
 set local statement_timeout='60s';
 set local track_functions='pl';
 insert into auth.users(id,is_sso_user,is_anonymous,raw_user_meta_data)values
@@ -53,12 +65,18 @@ do $$declare prior bigint;current_calls bigint;page jsonb;name text;begin
  end loop;
 end $$;
 reset role;
-rollback;`
-	command := exec.CommandContext(ctx, "docker", "exec", "-i", "supabase_db_Yap_chat", "psql", "-U", "supabase_admin", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-q")
-	command.Stdin = strings.NewReader(sql)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("bounded SQL work regression: %v %s", err, output)
+rollback;`)
+}
+
+func TestSupabaseLocalFollowAuthorWork(t *testing.T) {
+	stage5Pool(t)
+	root := os.Getenv("YAP_SUPABASE_APP_ROOT")
+	if !filepath.IsAbs(root) {
+		t.Fatal("explicit absolute Supabase AppRoot required; use test-supabase-local.ps1")
 	}
-	t.Logf("%s", output)
+	source, err := os.ReadFile(filepath.Join(root, "supabase", "tests", "feed_follow_author_work_bound.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runFeedWorkSQL(t, string(source))
 }

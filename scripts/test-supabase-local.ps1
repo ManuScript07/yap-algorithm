@@ -6,10 +6,11 @@ param(
     [switch]$WithMedia,
     [switch]$WithSoak,
     [ValidateRange(1,120)][int]$SoakMinutes = 60,
-    [string]$Run = '^TestSupabaseLocal(Pipeline|Media|MediaCapacity|MediaDBOutage|Social|SocialSecurity|SocialLoad|Follows|FollowsLoad|Nearby|Preparation|PreparationLoad|FeedWorkBound)$'
+    [string]$Run = '^TestSupabaseLocal(Pipeline|Media|MediaCapacity|MediaDBOutage|Social|SocialSecurity|SocialLoad|Follows|FollowsLoad|Nearby|Preparation|PreparationLoad|FeedWorkBound|FollowAuthorWork|Feedback|FeedbackLoad)$'
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
+$AppRoot = [IO.Path]::GetFullPath($AppRoot)
 if ($WithSoak) {
     $drives = @($env:SystemDrive.TrimEnd(':'), [IO.Path]::GetPathRoot($serviceRoot).Substring(0,1)) | Select-Object -Unique
     foreach ($drive in $drives) {
@@ -18,7 +19,7 @@ if ($WithSoak) {
 }
 $cli = Join-Path $AppRoot 'node_modules/.bin/supabase.cmd'
 if (!(Test-Path -LiteralPath $cli)) { throw 'Supabase CLI is missing in AppRoot.' }
-$names = @('YAP_SUPABASE_INTEGRATION', 'YAP_SUPABASE_LOCAL_ADMIN_DSN', 'YAP_SUPABASE_LOCAL_URL',
+$names = @('YAP_SUPABASE_INTEGRATION', 'YAP_SUPABASE_APP_ROOT', 'YAP_SUPABASE_LOCAL_ADMIN_DSN', 'YAP_SUPABASE_LOCAL_URL',
     'YAP_SUPABASE_LOCAL_ANON_KEY', 'YAP_SUPABASE_LOCAL_SERVICE_KEY', 'GOMODCACHE', 'GOCACHE', 'YAP_SUPABASE_MODEL_TEST', 'YAP_SUPABASE_LOAD_TEST',
     'YAP_SUPABASE_MEDIA_TEST','YAP_SUPABASE_MEDIA_DSN','YAP_SUPABASE_MEDIA_TOKEN',
     'YAP_SUPABASE_LOCAL_JWT_SECRET','YAP_SUPABASE_MEDIA_SOAK','YAP_SUPABASE_SOAK_MINUTES','YAP_SUPABASE_RECSYS_DSN')
@@ -31,6 +32,7 @@ try {
         throw 'Tests require the running local YapChat Supabase on port 54321.'
     }
     $env:YAP_SUPABASE_INTEGRATION = '1'
+    $env:YAP_SUPABASE_APP_ROOT = $AppRoot
     $env:YAP_SUPABASE_MODEL_TEST = if ($WithModel) { '1' } else { '0' }
     $env:YAP_SUPABASE_LOAD_TEST = if ($WithLoad) { '1' } else { '0' }
     $env:YAP_SUPABASE_MEDIA_TEST = if ($WithMedia -or $WithSoak) { '1' } else { '0' }
