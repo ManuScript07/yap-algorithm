@@ -370,3 +370,22 @@ python -m pip install -r ml/requirements-corpus.txt
 python ml/commons_photos.py .local/output/commons-photos --per-topic 14
 python ml/quality_corpus.py .local/output/commons-photos .local/output/quality-corpus --review .local/output/reviewed-photo-ids.txt
 ```
+
+## Сравнение текстовых моделей
+
+Используйте один собранный корпус и запускайте варианты отдельными процессами с одинаковым числом потоков CPU. `--download` скачивает публичные веса зафиксированных ревизий. Сначала проверьте `--smoke`, особенно для BGE-M3 FP32 (около 2,3 ГБ весов на диске).
+
+```powershell
+$corpus = '.local/output/quality-corpus'
+# Можно собрать тот же текстовый срез без скачивания фото:
+# python ml/quality_corpus.py --text-only $corpus
+$env:HF_HOME = (Join-Path (Get-Location) '.cache/huggingface')
+python ml/benchmark_text.py --model bge-m3 --corpus $corpus --output .local/bge-smoke.json --smoke --download
+python ml/benchmark_text.py --model e5-int8 --corpus $corpus --output .local/e5-int8.json --download
+python ml/benchmark_text.py --model e5-fp32 --corpus $corpus --output .local/e5-fp32.json --baseline .local/e5-int8.json --download
+python ml/benchmark_text.py --model bge-m3 --corpus $corpus --output .local/bge.json --baseline .local/e5-int8.json
+```
+
+Для точного и HNSW-поиска установите `ml/requirements-benchmark.txt` и добавьте `--pg`. Тест подключается к локальной Supabase на `127.0.0.1:54322` с паролем из `PGPASSWORD` и использует временную таблицу на одно соединение. `--pg-growth 10000` добавляет отдельный синтетический сценарий размера индекса. Полнота HNSW здесь считается относительно точного top‑K. Качество энкодера считается относительно авторских тематических меток. Задержка поиска измеряется от отправки SQL до получения ID.
+
+JSON содержит контрольные суммы корпуса и артефактов, размерность, prefix, pooling, нормализацию, разрядность, метрики по языковым срезам, время CPU и пиковую рабочую память процесса. Если по результатам следующего эксперимента меняется модель, храните новые векторы в отдельном пространстве. Сначала заполните его в фоне с ограниченной скоростью, затем пересчитайте интересы и пулы в новом пространстве. Переключайте новые сессии только после проверки полноты и качества новых снимков. Старые снимки и векторы нужны для существующих сессий и отката.

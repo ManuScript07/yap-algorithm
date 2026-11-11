@@ -59,7 +59,7 @@ def photo_index(folder):
 
 def build(photo_folder, review=None):
     topics = source_topics()
-    photos, photo_hash = photo_index(photo_folder)
+    photos, photo_hash = photo_index(photo_folder) if photo_folder is not None else ([], None)
     review_hash = None
     if review is not None:
         reviewed = review.read_bytes()
@@ -68,9 +68,10 @@ def build(photo_folder, review=None):
             raise ValueError("photo selection contains an unknown photo")
         photos = [entry for entry in photos if entry["id"] in keep]
         review_hash = digest(reviewed)
-    counts = Counter(photo["topic"] for photo in photos)
-    if set(counts) != topics.keys() or min(counts.values()) < 3 or not 150 <= len(photos) <= 300:
-        raise ValueError("not enough licensed photos per topic")
+    if photo_folder is not None:
+        counts = Counter(photo["topic"] for photo in photos)
+        if set(counts) != topics.keys() or min(counts.values()) < 3 or not 150 <= len(photos) <= 300:
+            raise ValueError("not enough licensed photos per topic")
     documents, queries, judgments, profiles = [], [], [], []
     by_topic = {}
     for topic, (contrast, prompts, texts) in topics.items():
@@ -88,10 +89,11 @@ def build(photo_folder, review=None):
                     records.append(dict(id=f"{topic}-short-{language}", topic=topic,
                                         translation_group=f"{topic}-short", kind="text",
                                         language=language, text=body, photos=[]))
-        for i, identifier in enumerate(media):
+        for identifier in media:
             records.append(dict(id=identifier, topic=topic, kind="photo", language=None, text=None, photos=[identifier]))
-        records.append(dict(id=f"{topic}-mixed", topic=topic, kind="mixed", language="ru",
-                            text=texts[0][0], photos=media[:3]))
+        if media:
+            records.append(dict(id=f"{topic}-mixed", topic=topic, kind="mixed", language="ru",
+                                text=texts[0][0], photos=media[:3]))
         by_topic[topic] = records
         documents.extend(records)
         for i, pair in enumerate(prompts):
@@ -119,8 +121,9 @@ def build(photo_folder, review=None):
                                       provenance="authored_contrast"))
     rows = dict(documents=documents, queries=queries, judgments=judgments, photos=photos, profiles=profiles)
     files = {key + ".jsonl": b"".join(map(canonical, value)) for key, value in rows.items()}
-    manifest = dict(schema="yap-quality-corpus-v1", origin="authored-synthetic-text-and-commons-photos",
-                    judgment_policy="bilingual-intents-with-weak-photo-labels-v1",
+    manifest = dict(schema="yap-quality-corpus-v1",
+                    origin="authored-synthetic-text-and-commons-photos" if photos else "authored-synthetic-text",
+                    judgment_policy="bilingual-intents-with-weak-photo-labels-v1" if photos else "bilingual-text-intents-v1",
                     topics_sha256=digest(TOPICS.read_bytes()), photo_index_sha256=photo_hash,
                     photo_selection_sha256=review_hash,
                     builder_sha256=digest(Path(__file__).read_bytes()),
@@ -132,10 +135,15 @@ def build(photo_folder, review=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("photos", type=Path)
+    parser.add_argument("photos", type=Path, nargs="?", help="Commons photo folder (omit with --text-only)")
     parser.add_argument("output", type=Path)
     parser.add_argument("--review", type=Path, help="private list of visually screened Commons photo IDs")
+    parser.add_argument("--text-only", action="store_true", help="build the same text evaluation without photos")
     args = parser.parse_args()
+    if args.text_only and (args.photos or args.review):
+        parser.error("--text-only takes only the output folder")
+    if not args.text_only and args.photos is None:
+        parser.error("the photo folder is required unless --text-only is set")
     manifest, files = build(args.photos, args.review)
     publish_files(args.output, {**files, "manifest.json": canonical(manifest)})
     print(manifest["dataset_sha256"])

@@ -1,0 +1,2 @@
+# Optional client for the local pgvector comparison in benchmark_text.py.
+psycopg[binary]==3.3.3

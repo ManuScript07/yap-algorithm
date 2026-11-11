@@ -9,6 +9,11 @@ import os
 from pathlib import Path
 import threading
 
+if __package__:
+    from .embedding import encode_batch
+else:
+    from embedding import encode_batch
+
 MODEL = "intfloat/multilingual-e5-small"
 REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
 EMBEDDING_ID = f"{MODEL}@{REVISION}:onnx-int8:query"
@@ -26,7 +31,6 @@ def main():
     args = parser.parse_args()
     os.environ.setdefault("USE_TORCH", "0")
     os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
-    import numpy as np
     from transformers import AutoTokenizer
     from huggingface_hub import hf_hub_download
     import onnxruntime as ort
@@ -36,7 +40,6 @@ def main():
     options.intra_op_num_threads = args.threads
     options.inter_op_num_threads = 1
     encoder = ort.InferenceSession(model_path, sess_options=options, providers=["CPUExecutionProvider"])
-    input_names = {x.name for x in encoder.get_inputs()}
     gate = threading.Lock()
     ranker = None
     rank_version = None
@@ -62,14 +65,9 @@ def main():
                     embedding_cache.move_to_end(text)
             missing = list(dict.fromkeys(text for text in texts if text not in embedding_cache))
             if missing:
-                tokens = tokenizer(["query: " + text for text in missing], max_length=512, truncation=True, padding=True, return_tensors="np")
-                feeds = {name: np.asarray(value, dtype=np.int64) for name, value in tokens.items() if name in input_names}
-                if "token_type_ids" in input_names and "token_type_ids" not in feeds:
-                    feeds["token_type_ids"] = np.zeros_like(feeds["input_ids"], dtype=np.int64)
-                hidden = encoder.run(None, feeds)[0]
-                mask = np.asarray(tokens["attention_mask"], dtype=np.float32)[..., None]
-                pooled = (hidden * mask).sum(axis=1) / mask.sum(axis=1).clip(min=1)
-                pooled /= np.linalg.norm(pooled, axis=1, keepdims=True).clip(min=1e-12)
+                pooled = encode_batch(
+                    encoder, tokenizer, missing, prefix="query: ", pooling="mean", max_tokens=512,
+                )
                 for text, vector in zip(missing, pooled.tolist()):
                     embedding_cache[text] = vector
                 while len(embedding_cache) > 2048:
