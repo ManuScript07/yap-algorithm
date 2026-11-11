@@ -27,6 +27,7 @@ type config struct {
 	Once, RetryFailed, EnqueueBackfill bool
 	BackfillAfter                      string
 	BackfillLimit                      int
+	Vision                             bool
 }
 
 func run(ctx context.Context, options config) error {
@@ -53,6 +54,9 @@ func run(ctx context.Context, options config) error {
 	recommendations, err := repo.Recommendations(ctx)
 	if err != nil {
 		return err
+	}
+	if options.Vision {
+		recommendations = recommendations.WithVision()
 	}
 	if options.EnqueueBackfill {
 		result, err := repo.EnqueueBackfill(ctx, options.BackfillAfter, options.BackfillLimit)
@@ -157,7 +161,7 @@ func main() {
 	if modelURL == "" {
 		modelURL = "http://127.0.0.1:8091"
 	}
-	if err := run(ctx, config{DSN: os.Getenv("DATABASE_URL"), ModelURL: modelURL, Concurrency: *concurrency, BatchSize: *batchSize, Once: *once, RetryFailed: *retryFailed, EnqueueBackfill: *enqueueBackfill, BackfillAfter: *backfillAfter, BackfillLimit: *backfillLimit}); err != nil {
+	if err := run(ctx, config{DSN: os.Getenv("DATABASE_URL"), ModelURL: modelURL, Concurrency: *concurrency, BatchSize: *batchSize, Once: *once, RetryFailed: *retryFailed, EnqueueBackfill: *enqueueBackfill, BackfillAfter: *backfillAfter, BackfillLimit: *backfillLimit, Vision: os.Getenv("YAP_VISION_PILOT") == "1"}); err != nil {
 		slog.Error("worker_stopped", "error", err)
 		os.Exit(1)
 	}

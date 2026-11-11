@@ -17,6 +17,7 @@ type RecommendationRepository struct {
 	pool     *pgxpool.Pool
 	model    string
 	priority *int
+	vision   bool
 }
 
 // Recommendations shares the restricted pool with indexing. It never creates
@@ -81,6 +82,9 @@ func (r *RecommendationRepository) LoadProfile(ctx context.Context, job applicat
 	for _, e := range wire.Evidence {
 		input.Evidence = append(input.Evidence, ranking.Evidence{PostID: e.PostID, PostVersion: e.Version, Vector: domain.ParseVector(e.Vector), Weight: e.Weight, At: e.At})
 	}
+	if r.vision {
+		r.loadVision(ctx, job, &input)
+	}
 	return input, nil
 }
 
@@ -141,7 +145,7 @@ func (r *RecommendationRepository) LoadCandidates(ctx context.Context, job appli
 		}
 		rows = append(rows, ranking.Candidate{ID: c.ID, AuthorID: c.Author, PostVersion: c.Version, CreatedAt: c.At, Embedding: vector, Sources: c.Sources, Social: c.Social, Nearby: c.Nearby, Impressions: c.Impressions, Likes: c.Likes, Reposts: c.Reposts, AuthorImpressions: c.AuthorImpressions, AuthorViewers: c.AuthorViewers, HasAuthorExposure: true, Seen: c.Seen})
 	}
-	return rows, nil
+	return mergeVision(rows, input.VisualCandidates), nil
 }
 
 func (r *RecommendationRepository) Publish(ctx context.Context, job application.RefreshJob, result application.RecommendationResult) (bool, error) {
@@ -150,22 +154,37 @@ func (r *RecommendationRepository) Publish(ctx context.Context, job application.
 		return false, err
 	}
 	items := make([]map[string]any, 0, len(result.Candidates))
+	vision := false
 	for _, c := range result.Candidates {
+		vision = vision || c.Visual > 0
 		items = append(items, map[string]any{"post_id": c.ID, "post_version": c.PostVersion, "features": c.Features, "score": c.Score, "reasons": c.Reasons, "sources": c.Sources})
 	}
 	evidence := make([]map[string]any, 0, len(result.Input.Evidence))
 	for _, e := range result.Input.Evidence {
 		evidence = append(evidence, map[string]any{"post_id": e.PostID, "post_version": e.PostVersion})
 	}
-	body, err := json.Marshal(map[string]any{"epoch": result.Input.Epoch, "revision": result.Input.Revision, "at": result.Input.At, "needs_embeddings": result.Input.NeedsEmbeddings,
-		"feature_version": result.FeatureVersion, "policy_version": result.PolicyVersion, "embedding_space": r.model, "profile": profiles, "items": items, "evidence": evidence})
+	if vision {
+		for _, e := range result.Input.VisualEvidence {
+			evidence = append(evidence, map[string]any{"post_id": e.PostID, "post_version": e.PostVersion})
+		}
+	}
+	payload := map[string]any{"epoch": result.Input.Epoch, "revision": result.Input.Revision, "at": result.Input.At, "needs_embeddings": result.Input.NeedsEmbeddings,
+		"feature_version": result.FeatureVersion, "policy_version": result.PolicyVersion, "embedding_space": r.model, "profile": profiles, "items": items, "evidence": evidence}
+	if vision {
+		payload["vision_fence"] = result.Input.VisualSources
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return false, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	var accepted bool
-	err = r.pool.QueryRow(ctx, "select recsys.publish_recommendations($1::uuid,$2::uuid,$3::text::jsonb)", job.UserID, job.Lease, string(body)).Scan(&accepted)
+	query := "select recsys.publish_recommendations($1::uuid,$2::uuid,$3::text::jsonb)"
+	if vision {
+		query = "select recsys.publish_vision_recommendations($1::uuid,$2::uuid,$3::text::jsonb)"
+	}
+	err = r.pool.QueryRow(ctx, query, job.UserID, job.Lease, string(body)).Scan(&accepted)
 	return accepted, err
 }
 

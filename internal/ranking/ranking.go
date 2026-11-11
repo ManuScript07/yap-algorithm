@@ -17,6 +17,7 @@ type Candidate struct {
 	PostVersion                      int
 	CreatedAt                        time.Time
 	Embedding                        []float64
+	Visual                           float64
 	Sources                          []string
 	Social, Nearby                   bool
 	Impressions, Likes, Reposts      int
@@ -61,6 +62,10 @@ func Score(candidates []Candidate, interests []Interest, now time.Time) {
 		f := c.Features
 		c.Score = 0.46*f[0] + 0.13*f[1] + 0.10*f[2] + 0.16*f[3] + 0.10*f[5] + 0.05*f[6] - 0.50*f[4] - 0.18*f[7]
 		c.Reasons = []string{}
+		if len(c.Embedding) == 0 && c.Visual > 0 && c.Visual <= 1 {
+			c.Score += 0.16 * c.Visual
+			c.Reasons = append(c.Reasons, "similar_photos")
+		}
 		if f[0] > .2 {
 			c.Reasons = append(c.Reasons, "similar_interests")
 		}

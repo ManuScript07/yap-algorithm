@@ -15,12 +15,19 @@ const (
 )
 
 type RefreshJob struct{ UserID, Lease string }
+type VisualSource struct {
+	PhotoID string `json:"photo_id"`
+	SHA     string `json:"sha"`
+}
 type ProfileInput struct {
-	Epoch           int
-	Revision        int64
-	At              time.Time
-	Evidence        []ranking.Evidence
-	NeedsEmbeddings bool
+	Epoch            int
+	Revision         int64
+	At               time.Time
+	Evidence         []ranking.Evidence
+	NeedsEmbeddings  bool
+	VisualCandidates []ranking.Candidate
+	VisualEvidence   []ranking.Evidence
+	VisualSources    []VisualSource
 }
 type RecommendationResult struct {
 	Input          ProfileInput
