@@ -1,0 +1,2 @@
+# Only needed to fetch and validate Commons photos; replay uses the stdlib.
+pillow==13.0.0

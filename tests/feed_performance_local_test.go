@@ -18,7 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"yap-algorithm/internal/application"
+	"yap-algorithm/internal/dataset"
 	"yap-algorithm/internal/domain"
 )
 
@@ -101,6 +103,21 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		sbExec(t, p, "delete from auth.users where id=any($1::uuid[])", users)
 	})
 	readers, authors := users[:60], users[60:]
+	withExport := os.Getenv("YAP_FEED_PERF_EXPORT") == "1"
+	var exportConn *pgx.Conn
+	var exportCohort, exportDir string
+	if withExport {
+		// Both arms use the same HTTP workload. All 96 synthetic authors and
+		// 32 readers fit in the deliberately bounded capture scope.
+		var cfg *pgx.ConnConfig
+		exportCohort, cfg = datasetScope(t, p, append(append([]string{}, authors...), readers[:32]...)...)
+		exportConn, err = pgx.ConnectConfig(ctx, cfg)
+		if err != nil {
+			t.Fatal("cannot connect as benchmark exporter")
+		}
+		t.Cleanup(func() { _ = exportConn.Close(context.Background()) })
+		exportDir = t.TempDir()
+	}
 	sbExec(t, p, `insert into feed.posts(id,author_id,text,audience,language,creation_request,latitude,longitude)
  select extensions.gen_random_uuid(),($1::uuid[])[1+(n-1)%96],'Read benchmark post '||n,'public','en','[]',55,37 from generate_series(1,2000)n`, authors)
 	vector, err := domain.Vector(sbVector())
@@ -290,6 +307,32 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		}
 	}()
 	start := time.Now()
+	var captureTimes []float64
+	exported := 0
+	exportErr := make(chan error, 1)
+	var exportGroup sync.WaitGroup
+	exportStop := make(chan struct{})
+	if withExport {
+		exportGroup.Go(func() {
+			for {
+				before := time.Now()
+				m, err := dataset.Capture(ctx, exportConn, dataset.Options{Cohort: exportCohort,
+					Output:   filepath.Join(exportDir, fmt.Sprintf("capture-%03d", len(captureTimes))),
+					PageSize: 200, MaxRows: 10000, Timeout: 10 * time.Second, BinaryHash: strings.Repeat("0", 64)})
+				if err != nil || m.Rows < 4000 {
+					exportErr <- fmt.Errorf("capture rows=%d error=%w", m.Rows, err)
+					return
+				}
+				captureTimes = append(captureTimes, float64(time.Since(before))/float64(time.Millisecond))
+				exported += m.Rows
+				select {
+				case <-exportStop:
+					return
+				case <-time.After(2 * time.Second):
+				}
+			}
+		})
+	}
 	count := rate * seconds / 60
 	dropped := 0
 	interval := time.Minute / time.Duration(rate)
@@ -305,9 +348,19 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	ticker.Stop()
 	close(jobs)
 	group.Wait()
+	elapsed := time.Since(start)
+	close(exportStop)
+	exportGroup.Wait()
+	select {
+	case err := <-exportErr:
+		t.Error(err)
+	default:
+	}
+	if withExport && len(captureTimes) < 2 {
+		t.Error("capture workload did not run during the HTTP benchmark")
+	}
 	cancelMonitor()
 	monitor.Wait()
-	elapsed := time.Since(start)
 	aggregates := map[string]feedPerfSummary{}
 	endToEnd := map[string]feedPerfSummary{}
 	latencyBudgetMet := true
@@ -357,6 +410,10 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := map[string]any{"mode": mode, "label": label, "cold_fallback_http_ms": summarizeFeedTiming(fallbackMS), "target_per_minute": rate, "duration_seconds": seconds, "page_size": pageSize, "elapsed_seconds": elapsed.Seconds(), "arrivals": count, "completed": len(samples), "admission_dropped": dropped, "admission_ms": summarizeFeedTiming(admission), "http_ms": aggregates, "scheduled_end_to_end_ms": endToEnd, "http_latency_budget_met": latencyBudgetMet, "achieved_completions_per_minute": float64(len(samples)) * 60 / elapsed.Seconds(), "failures": failures, "max_sampled_lock_waiters": maxLocks, "wait_monitor_samples": monitorSamples, "wait_monitor_errors": monitorErrors, "outcomes": outcomes, "max_sampled_active_connections": maxActive, "backfill_done": done, "samples": samples, "note": "60 readers; 96 authors; 2000 warm technical vectors + 2000 background posts; sample p99 is descriptive, not a sustained SLA"}
+	report["export_enabled"], report["export_http_overlap_ms"], report["exported_facts"] = withExport, summarizeFeedTiming(captureTimes), exported
+	if withExport {
+		t.Logf("dataset captures=%d facts=%d p95=%.2fms", len(captureTimes), exported, summarizeFeedTiming(captureTimes).P95)
+	}
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		t.Fatal(err)

@@ -1,0 +1,255 @@
+[cats|dogs]
+котёнок и домашние кошки|kittens and domestic cats
+как живётся с котом|what life with a cat is like
+кошачьи привычки и уход|feline habits and care
+мурчание и игры с котятами|purring and playing with kittens
+Котёнок уснул в коробке из-под обуви.|The kitten dozed off inside a shoebox.
+Кошка стянула носок с батареи.|Our cat pulled a sock off the radiator.
+На рассвете кот просит открыть балкон.|At dawn the cat wants the balcony door open.
+Когтеточку наконец поставили у дивана.|We moved the scratching post beside the couch.
+Рыжая кошка наблюдает за голубями из окна.|A ginger cat watches pigeons through the window.
+Услышав шуршание пакета, кот прибежал на кухню.|The crinkle of a bag sent the cat running into the kitchen.
+В ветклинике котёнка впервые взвесили.|The vet weighed the kitten for the first time.
+Пятнистый кот облюбовал кресло у лампы.|The spotted cat claimed the chair by the lamp.
+Из приюта привезли двух осторожных кошек.|Two shy cats came home from the shelter.
+Мурчит так громко, что будит по утрам.|The purring is loud enough to wake me up.
+
+[dogs|cats]
+домашние собаки и щенки|pet dogs and puppies
+прогулки и дрессировка пса|walking and training a dog
+жизнь с собакой дома|sharing a home with a dog
+собачьи игры и привычки|canine play and habits
+Щенок впервые принёс палку обратно.|The puppy fetched the stick for the first time.
+Пёс обходит мокрую траву после дождя.|Our dog avoids the wet grass after a shower.
+Взяли длинный поводок для занятий в парке.|We bought a long leash for practice in the park.
+Собака громко фыркает в ожидании ужина.|The dog snorts while waiting for dinner.
+Пёс из приюта привык к лифту за неделю.|The rescue dog took a week to get used to the elevator.
+Утром терьер нашёл мяч под крыльцом.|The terrier found a ball under the porch this morning.
+Щенок уснул прямо в своей шлейке.|The puppy fell asleep with the harness still on.
+Наш ретривер рад даже короткой прогулке.|Our retriever gets excited about even a short walk.
+Пёс учится спокойно ждать перед дверью.|The dog is learning to wait quietly by the door.
+Собрали воду и миску для поездки с собакой.|We packed water and a bowl for the trip with our dog.
+
+[bicycles|motorcycles]
+велосипеды и поездки на педалях|bicycles and pedal-powered rides
+велосипедный ремонт и уход|bicycle repair and upkeep
+городские прогулки на велике|cycling around town
+снаряжение и маршруты для велосипедиста|equipment and routes for cyclists
+Цепь перестала скрипеть после чистки.|The bike chain stopped squeaking after a clean.
+До работы теперь езжу по велодорожке.|I take the bike lane to work now.
+На спуске проверил оба тормоза велосипеда.|I checked both bike brakes before the descent.
+Велопрокат открыл станцию у метро.|The bike share added a station by the subway.
+Прокол заклеили прямо у обочины.|We patched the bike tube right by the road.
+Складной велосипед помещается под столом.|The folding bicycle fits under the desk.
+Велосипедный фонарь держится на силиконовом ремешке.|A silicone strap holds the bike light in place.
+Педаль открутили только длинным ключом.|It took a long wrench to remove the pedal.
+В субботу едем на великах вдоль реки.|We're cycling along the river on Saturday.
+Седло опустил после первой поездки.|I lowered the bicycle saddle after the first ride.
+
+[motorcycles|bicycles]
+мотоциклы и поездки на моторе|motorcycles and powered two-wheel rides
+уход и ремонт мотоцикла|motorbike maintenance and repair
+экипировка для мотоциклиста|gear for motorcyclists
+мотоциклы на дороге и в гараже|motorcycles on the road and in the garage
+Заменил масло перед первым выездом на мотоцикле.|I changed the oil before my first motorcycle ride of the year.
+Байк прогрелся у ворот гаража.|The motorbike warmed up by the garage door.
+На светофоре заглох двигатель мотоцикла.|The motorcycle engine stalled at the traffic light.
+Куртка с защитой не продувается на трассе.|My armored riding jacket keeps out the highway wind.
+Кофр на мотоцикле вместил дождевик и перчатки.|The motorcycle top box held a rain suit and gloves.
+Проверил уровень топлива перед поездкой на байке.|I checked the fuel before taking the motorbike out.
+Круизер показали на выставке в соседнем городе.|A cruiser was on display at a show in the next town.
+Подтянул трос сцепления на старом мотоцикле.|I adjusted the clutch cable on the old motorcycle.
+Эндуро увяз в рыхлом песке.|The dirt bike sank into loose sand.
+Мотошлем пришлось отмыть от дорожной пыли.|I washed road dust off my motorcycle helmet.
+
+[trains|trams]
+поезда и железнодорожные путешествия|trains and journeys by rail
+электрички и дальние рейсы|commuter trains and long-distance rail trips
+вокзалы, вагоны и расписание поездов|railway stations, carriages, and train timetables
+как люди ездят на поездах|how people travel on trains
+Из окна вагона видны залитые туманом поля.|Fields covered in fog drift past the train window.
+Электричка ушла с третьего пути.|The commuter train left from track three.
+Проводник принёс бельё в купе.|The attendant brought bedding to our train compartment.
+На вокзале перенесли отправление ночного поезда.|The station delayed the overnight train.
+Локомотив сменили на пограничной станции.|They swapped the locomotive at the border station.
+До моря удобнее ехать в спальном вагоне.|A sleeper train is the easiest way to the coast.
+Платформу у железной дороги очистили от снега.|Snow was cleared off the railway platform.
+Сосед по купе поделился настольной игрой.|My seatmate in the train compartment shared a board game.
+Экспресс пролетел мимо нашей станции.|The express train sped past our station.
+На последней остановке электрички почти никого не осталось.|Hardly anyone was left on the commuter train at the terminus.
+
+[trams|trains]
+городской трамвай|city streetcars
+поездки на трамвайных маршрутах|rides on tram routes
+трамвайные остановки и вагоны|tram stops and vehicles
+рельсовый транспорт на улицах|rail vehicles running on city streets
+Трамвай свернул с проспекта к рынку.|The tram turned off the avenue toward the market.
+Вагоновожатый позвонил перед перекрёстком.|The streetcar driver rang the bell before the junction.
+Остановка трамвая переехала на другую сторону площади.|The tram stop moved across the square.
+Старый трамвай идёт по узким улицам центра.|An old streetcar runs through the narrow downtown streets.
+Открыли трамвайную ветку до нового района.|A new tram branch opened to the neighborhood.
+На повороте трамвайные колёса громко скрипят.|The streetcar wheels squeal loudly on the bend.
+До музея можно доехать трамваем без пересадки.|There's a direct tram to the museum.
+В трамвае заработал бесконтактный терминал.|The streetcar's contactless ticket reader is working again.
+У парка сняли старые трамвайные рельсы.|They removed the old tram tracks beside the park.
+После ремонта трамвай вернулся на кольцо.|The tram returned to the loop after repairs.
+
+[pizza|bread]
+пицца и разные начинки|pizza and different toppings
+домашняя пицца в духовке|homemade pizza in the oven
+ломтики пиццы и пиццерии|pizza slices and pizzerias
+рецепты и вкусы пиццы|pizza recipes and flavors
+У пиццы вышел тонкий хрустящий край.|The pizza came out with a thin, crisp crust.
+Половину пиццы сделали с грибами.|We put mushrooms on half the pizza.
+Камень для пиццы грели целый час.|The pizza stone spent an hour warming up.
+Базилик на маргариту положили после духовки.|The basil went on the Margherita after baking.
+Дети делили последний треугольник пиццы.|The kids split the last pizza slice.
+На лепёшку для пиццы намазали томатный соус.|Tomato sauce went onto the pizza base.
+Доставка привезла пиццу ещё горячей.|The delivered pizza was still hot.
+Для пиццы выбрали острую колбасу.|We chose spicy sausage for the pizza.
+Начинка сползла с куска пиццы на тарелку.|The toppings slid off the pizza slice onto the plate.
+В пиццерии теперь продают кусочки по одному.|The pizzeria now sells individual slices.
+
+[bread|pizza]
+хлеб, батоны и буханки|bread, rolls, and loaves
+как пекут хлеб на закваске|baking sourdough bread
+домашняя выпечка хлеба|home bread baking
+мякиш, корка и хлебное тесто|crumb, crust, and bread dough
+У свежей буханки корка ещё потрескивает.|The crust of the fresh loaf is still crackling.
+Закваску для хлеба подкормили вечером.|We fed the bread starter in the evening.
+Отрезал ломоть ржаного хлеба к супу.|I cut a slice of rye bread to go with soup.
+Хлеб остужается на решётке у окна.|The bread is cooling on a rack by the window.
+Пекарь посыпал батоны мукой перед надрезом.|The baker dusted the loaves with flour before scoring.
+У хлеба на ночь оставили тесто в холодильнике.|The bread dough rested in the fridge overnight.
+Первый домашний багет вышел кривым, но хрустящим.|My first baguette was crooked but crunchy.
+Бородинский хлеб пахнет кориандром.|The dark rye bread smells of coriander.
+Мякиш у этого хлеба чуть влажный.|This loaf has a slightly moist crumb.
+Хлеб нарезали только после остывания.|We waited for the bread to cool before slicing.
+
+[coffee|tea]
+кофе, зёрна и способы заваривания|coffee beans and brewing methods
+эспрессо и напитки с кофе|espresso and coffee drinks
+чашка кофе и работа бариста|cups of coffee and barista work
+обжарка и помол кофе|coffee roasting and grinding
+Первый эспрессо получился слишком кислым.|The first espresso came out too sour.
+Для фильтр-кофе взяли крупный помол.|We used a coarse grind for filter coffee.
+Кофе из гейзерной кофеварки пахнет орехами.|The moka pot coffee smells nutty.
+Бариста нарисовал лист на пенке капучино.|The barista drew a leaf on the cappuccino foam.
+Обжарщик подписал пакет с кофейными зёрнами.|The roaster labeled the bag of coffee beans.
+Лёд быстро растаял в стакане холодного кофе.|The ice melted quickly in the cold brew.
+Утром кофемолка разбудила весь дом.|The coffee grinder woke up the whole house.
+Американо взяли с собой на набережную.|We took an Americano along the waterfront.
+Турку сняли с огня, как только поднялась пена.|I lifted the coffee pot off the heat as the foam rose.
+Оставил кофейную гущу для компоста.|I saved the coffee grounds for compost.
+
+[tea|coffee]
+чайные листья и настои|tea leaves and infusions
+как заваривают чай|ways to brew tea
+чашки чая и чайники|cups of tea and teapots
+чёрный, зелёный и листовой чай|black, green, and loose-leaf tea
+Улун выдержал три коротких пролива.|The oolong held up through three short infusions.
+Зелёный чай заварили не кипятком.|We brewed the green tea below boiling.
+В чайник бросили несколько листиков мяты.|We dropped a few mint leaves into the teapot.
+Чёрный чай простоял слишком долго и горчит.|The black tea steeped too long and turned bitter.
+Подарили ситечко для листового чая.|Someone gave me a strainer for loose-leaf tea.
+Чай с лимоном быстро остыл на балконе.|The lemon tea cooled quickly on the balcony.
+На полке появились жестянки с чаем.|Tins of tea appeared on the shelf.
+Молочный улун пахнет после первого пролива.|The milk oolong is fragrant after its first steep.
+Налили крепкий чай из термоса у костра.|We poured strong tea from a flask by the fire.
+Для чая отмерили ложку сухих листьев.|I measured a spoonful of dried tea leaves.
+
+[roses|tulips]
+розы и уход за ними|roses and caring for them
+розовые кусты и бутоны|rose bushes and buds
+розы в саду и в букетах|garden roses and bouquets
+выращивание и цветение роз|growing roses and seeing them bloom
+Роза у забора выпустила первый бутон.|The rose by the fence produced its first bud.
+На стебле розы осталась капля дождя.|A raindrop stayed on the rose stem.
+У плетистой розы подвязали новые побеги.|We tied up the climbing rose's new shoots.
+В букете распустились две белые розы.|Two white roses opened in the bouquet.
+Шип розы зацепил рукав садовой куртки.|A rose thorn caught my gardening sleeve.
+Секатором убрал отцветшие розы.|I cut the spent blooms off the rose bush.
+Кремовые розы пахнут у калитки.|Cream-colored roses are fragrant by the gate.
+Розу в горшке переставили к солнцу.|We moved the potted rose into the sun.
+Куст розы укрыли на первую морозную ночь.|We covered the rose bush on the first frosty night.
+Садовник показал, как укоренить черенок розы.|The gardener showed us how to root a rose cutting.
+
+[tulips|roses]
+тюльпаны весной|tulips in spring
+выращивание тюльпанов из луковиц|growing tulips from bulbs
+тюльпановые клумбы и букеты|tulip beds and bouquets
+цветение и уход за тюльпанами|tulip blooms and care
+Тюльпаны закрылись, когда солнце скрылось.|The tulips closed when the sun disappeared.
+Луковицы тюльпанов посадили в сентябре.|We planted the tulip bulbs in September.
+На городской клумбе зацвели жёлтые тюльпаны.|Yellow tulips bloomed in the city flower bed.
+После полива стебли тюльпанов выпрямились.|The tulip stems straightened after watering.
+Букет тюльпанов поставили в прохладную воду.|We put the tulip bouquet in cool water.
+Белый тюльпан вырос среди красных.|A white tulip grew among the red ones.
+Листья тюльпанов оставили до пожелтения.|We left the tulip leaves until they turned yellow.
+Тюльпаны на балконе расцвели первыми.|The balcony tulips were the first to bloom.
+Тюльпан с полосатыми лепестками купили на рынке.|We bought a striped tulip at the market.
+У входа посадили махровые тюльпаны.|Double tulips were planted near the entrance.
+
+[mountains|waterfalls]
+горы и горные вершины|mountains and high peaks
+походы по хребтам и перевалам|hiking ridges and mountain passes
+горный пейзаж и высота|mountain scenery and elevation
+тропы и виды в горах|trails and views in the mountains
+Перевал прошли до обеда, пока не поднялся ветер.|We crossed the mountain pass before the wind picked up.
+Горный хребет утром был закрыт облаками.|Clouds covered the mountain ridge in the morning.
+Под вершиной лежит прошлогодний снег.|Last year's snow lingers just below the summit.
+У горного приюта наполнили бутылки водой.|We refilled our bottles at the mountain hut.
+На каменистом склоне пригодились треккинговые палки.|Hiking poles helped on the rocky mountain slope.
+С подъёмника видно сразу несколько вершин.|Several mountain peaks are visible from the lift.
+Горная тропа дальше идёт по узкому гребню.|The mountain trail follows a narrow ridge ahead.
+Вдали загорелись на закате зубчатые горы.|Jagged mountains glowed in the distance at sunset.
+У подножия горы оставили машину.|We left the car at the foot of the mountain.
+До вершины не дошли из-за густого тумана.|Thick fog kept us from reaching the summit.
+
+[waterfalls|mountains]
+водопады и падающая вода|waterfalls and falling water
+тропы к водопадам|paths leading to waterfalls
+каскады рек на скалах|river cascades over cliffs
+пейзажи у водопадов|scenery around waterfalls
+Брызги водопада долетают до смотровой площадки.|Spray from the waterfall reaches the viewing platform.
+Река срывается с уступа в каменную чашу.|The river falls off a ledge into a stone basin.
+К водопаду спустились по мокрым ступеням.|We descended wet steps to the waterfall.
+После ливня каскад стал вдвое шире.|The cascade doubled in width after heavy rain.
+У основания водопада висит радужный туман.|Rainbow mist hangs at the foot of the waterfall.
+Водопад слышно раньше, чем видно.|You hear the waterfall before you see it.
+Зимой край водопада покрылся льдом.|Ice formed along the edge of the waterfall in winter.
+Тропа обходит водопад за струями.|The trail passes behind the waterfall's curtain.
+Поставили штатив у каскада на реке.|We set the tripod beside the river cascade.
+Ниже водопада течение неожиданно спокойное.|The water below the falls is surprisingly calm.
+
+[chess|guitars]
+шахматы, фигуры и партии|chess pieces and games
+шахматные клубы и турниры|chess clubs and tournaments
+ходы и тактика на шахматной доске|moves and tactics on a chessboard
+занятия шахматами|playing and studying chess
+Сдал партию после потери ферзя.|I resigned after losing my queen.
+На шахматном турнире забыли включить часы.|Someone forgot to start the clock at the chess tournament.
+Шахматную доску развернули белой клеткой вправо.|We turned the chessboard so the light corner was on the right.
+Конь вилкой напал на короля и ладью.|A knight fork attacked both king and rook.
+В клубе разбирали ладейный эндшпиль.|The chess club studied a rook endgame.
+На дворовой доске не хватало одной пешки.|One pawn was missing from the park chess set.
+Играл блиц в шахматы, пока ждал поезд.|I played blitz chess while waiting for the train.
+Рокировка вывела шахматного короля из центра.|Castling moved the chess king out of the center.
+На занятии дети научились ставить мат двумя ладьями.|The children learned to mate with two rooks at chess class.
+Записал шахматные ходы в блокнот после партии.|I wrote the chess moves in a notebook after the game.
+
+[guitars|chess]
+гитары и гитарная музыка|guitars and guitar music
+игра на акустической и электрогитаре|playing acoustic and electric guitar
+настройка, струны и ремонт гитары|guitar tuning, strings, and repairs
+уроки и репетиции с гитарой|guitar lessons and rehearsals
+Поменял струны на акустической гитаре.|I changed the strings on the acoustic guitar.
+Электрогитара зашумела у усилителя.|The electric guitar started buzzing near the amp.
+Гитарный аккорд наконец прозвучал чисто.|The guitar chord finally rang out cleanly.
+Медиатор упал внутрь корпуса гитары.|The pick fell inside the guitar body.
+На гитарном уроке начали разучивать перебор.|We started learning fingerpicking in the guitar lesson.
+Прижал струны гитары каподастром на втором ладу.|I clipped a capo onto the guitar's second fret.
+В чехле от гитары нашёл старые табы.|I found old tabs in the guitar case.
+Мастер поправил прогиб гитарного грифа.|The repairer adjusted the guitar's neck relief.
+После репетиции убрали гитару на стойку.|The guitar went back on its stand after rehearsal.
+На электрогитаре попробовали другой звукосниматель.|We tried a different pickup on the electric guitar.

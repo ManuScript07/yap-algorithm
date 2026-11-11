@@ -43,6 +43,8 @@ uv pip sync --python .venv/Scripts/python.exe ml/requirements.lock
 
 Нужна работающая локальная Supabase основного приложения на портах API 54321 / PostgreSQL 54322 с каноническими миграциями `20261104195702_feed_recommendation_pipeline.sql`, `20261104213317_personalized_feed.sql`, `20261104225631_feed_media_pipeline.sql`, `20261105120329_feed_media_capacity.sql`, `20261105143118_feed_social_interactions.sql`, `20261105174213_feed_author_subscriptions.sql`, `20261105183530_asynchronous_recommendation_preparation.sql`, `20261105184444_nearby_post_feed.sql`, `20261105221243_optimize_bounded_feed_reads.sql`, `20261105235213_feed_feedback_history.sql` и `20261106143352_optimize_followed_author_reads.sql` из репозитория YapChat. Они зависят от существующих проверок и таблиц приложения. Worker не применяет миграции при запуске.
 
+Для исследовательского экспорта дополнительно нужна миграция `20261111135435_recommendation_dataset_capture.sql` из того же репозитория.
+
 ```powershell
 $appRoot = 'D:/path/to/Yap_chat'
 ./scripts/supabase-local.ps1 -Action setup -AppRoot $appRoot
@@ -336,4 +338,35 @@ JSON под `.local/feed-perf-*.json` содержит p50/p95/p99/max по RPC 
 
 Миграция `20261106143352_optimize_followed_author_reads.sql` добавляет покрывающий индекс метаданных активных постов по автору. Кандидаты читаются без полного содержимого поста; полные строки нужны для проверки цитат и выбранной страницы. Исключения текущей сессии читаются один раз, лишнее соединение кандидатов со всей таблицей удалено. Сборка сначала фиксирует записи текущей страницы, затем загружает только их посты через зависимый поиск по ID. Эти изменения устраняют найденные при регрессии повторные обходы общего индекса и квадратичные соединения при устаревшем плане. SQL-контракт `feed_follow_author_work_bound.sql` прогревает план, увеличивает чужие страницы и проверяет реальное число прочитанных строк; `TestSupabaseLocalFollowAuthorWork` запускает тот же канонический тест из `AppRoot`. В `FollowsLoad` p95<=300мс/p99<=800мс проверяются отдельно для каждого RPC, дополнительно к пропускной способности. Права и порядок ленты сохранены.
 
-Настоящий read-only dataset export, временной split, manifests и обучение — следующий подпункт6.2. `ml/export.py` остаётся изолированным legacy fixture-прототипом с ограниченным proxy-label; его max/any нельзя считать корректными метками нового контура. Обучаемый ranker пока не включён.
+`ml/export.py` остаётся изолированным прототипом для старой тестовой базы. Экспорт рабочего журнала и временное разделение описаны ниже. Обучаемый ranker пока не включён.
+
+## Датасет из локальной Supabase
+
+Запустите локальную Supabase, E5 и recommendation worker. Если проверяете фото, запустите media worker и передайте путь к тестовому JPEG/PNG, который можно использовать в эксперименте. Симулятор создаёт временные аккаунты, входит через Supabase Auth и вызывает те же RPC и Storage, что будущий клиент. Параметр `Seed` фиксирует сценарий действий; серверные время и UUID у нового запуска будут другими.
+
+```powershell
+./scripts/dataset-simulate-local.ps1 -AppRoot $appRoot -RunName dataset-demo -Seed 42
+# Для проверки Storage добавьте -Photo <локальный JPEG или PNG>.
+python ml/dataset.py .local/output/dataset-demo/build.json .local/output/dataset-demo-built
+```
+
+Для самостоятельного захвата оператор регистрирует только синтетическую группу и её участников в `recsys_dataset.cohorts` / `members`. Выдайте отдельному логину членство в `yap_recommendation_exporter`. Эта роль имеет право вызывать только две функции экспорта; таблицы журнала, контента и происхождения для неё закрыты. Передайте URL в переменной `YAP_DATASET_DSN` (локально `127.0.0.1:54322/postgres?sslmode=disable`), храните его вне Git. Для удалённого подключения предусмотрен явный `-remote` с `sslmode=verify-full`; этот сценарий не участвует в локальном симуляторе.
+
+```powershell
+New-Item -ItemType Directory -Force .local/output
+go run ./cmd/dataset-capture -cohort <UUID> -output .local/output/capture-1
+./scripts/test-supabase-local.ps1 -AppRoot $appRoot -Race -Run '^TestSupabaseLocalDatasetCapture$'
+# Два сравнимых нагрузочных прогона с одинаковыми Mode, Rate, Seconds и PageSize:
+# ./scripts/benchmark-feed-local.ps1 ... -Label baseline
+# ./scripts/benchmark-feed-local.ps1 ... -Label export -WithExport
+```
+
+Каждый захват использует одно соединение и неизменный срез PostgreSQL. Номер события служит курсором внутри захвата; следующий захват снова читает своё полное окно. Если база не может подтвердить границу завершённых записей, сборщик отклоняет захват. Для split используйте три последовательных захвата; `build.json` симулятора показывает конфигурацию окон и пауз. Сборщик проверяет время доступности меток, совместимость признаков, версии постов и пересечения групп с копиями текста/фото. Для фото требуется проверенный хеш обработанного файла и его отпечаток; иначе соответствующая группа исключается с отдельной причиной. `cold_user` и `cold_author` означают отсутствие примеров этого пользователя или автора в train. Готовый набор и манифесты воспроизводятся из тех же захватов; данные симулятора не предназначены для оценки пользы ленты для реальных пользователей.
+
+Отдельный корпус сравнения семантики включает авторские RU/EN тексты и фотографии Wikimedia Commons с индивидуальными лицензиями. Релевантность фото по теме предварительная. Сохраните фотоиндекс, исходные файлы и список визуально проверенных ID для повторной сборки; новый запрос в Commons со временем может вернуть другие файлы.
+
+```powershell
+python -m pip install -r ml/requirements-corpus.txt
+python ml/commons_photos.py .local/output/commons-photos --per-topic 14
+python ml/quality_corpus.py .local/output/commons-photos .local/output/quality-corpus --review .local/output/reviewed-photo-ids.txt
+```
