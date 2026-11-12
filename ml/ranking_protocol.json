@@ -1,0 +1,26 @@
+{
+  "version": "offline-ranking-v1",
+  "k": 10,
+  "pool_budget": 40,
+  "source_limits": {"fresh": 16, "popular": 16, "semantic": 20, "social": 12, "discovery": 12, "vision": 8},
+  "retrieval": {
+    "chronological": ["fresh"],
+    "popularity": ["popular"],
+    "semantic": ["semantic"],
+    "hybrid": ["fresh", "semantic", "social", "popular", "discovery"],
+    "hybrid_without_semantic": ["fresh", "social", "popular", "discovery"],
+    "hybrid_without_social": ["fresh", "semantic", "popular", "discovery"],
+    "hybrid_without_discovery": ["fresh", "semantic", "social", "popular"],
+    "hybrid_vision": ["fresh", "semantic", "social", "popular", "discovery", "vision"]
+  },
+  "common_pool": "hybrid",
+  "reranking": ["chronological", "popularity", "semantic", "hybrid", "hybrid_vision", "catboost"],
+  "seeds": [17, 42, 91],
+  "bootstrap_seed": 20261112,
+  "bootstrap_samples": 1000,
+  "catboost": {"iterations": 120, "depth": 4, "loss_function": "YetiRank", "eval_metric": "NDCG:top=10;type=Exp", "thread_count": 2, "early_stopping_rounds": 20},
+  "utility": {"liked": 1, "commented": 1, "reposted": 2, "quoted": 2, "follows_author": 2, "author_hidden": -3, "less_similar": -2, "post_reported": -3},
+  "fixture_seed": 612,
+  "label_window_seconds": 120,
+  "topic_shift_checkpoints_seconds": [0, 10, 30]
+}

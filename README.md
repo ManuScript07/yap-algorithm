@@ -438,3 +438,19 @@ Go готовит новую версию «Для вас» в фоне. Отк�
 ./scripts/benchmark-feed-local.ps1 -AppRoot $appRoot -Mode inference -RequestsPerMinute 500 -Seconds 60 -Label control
 ./scripts/benchmark-feed-local.ps1 -AppRoot $appRoot -Mode inference -RequestsPerMinute 500 -Seconds 60 -Label topics -WithTopics
 ```
+
+## Офлайн-оценка выдачи
+
+`ml/ranking_protocol.json` фиксирует бюджеты источников, варианты сравнения, веса действий и три seed CatBoost. Эксперимент использует проверенный корпус текста и фото, а также неизменяемый набор, собранный из захвата Supabase. Сборку корпуса и захват описывают разделы выше. Используйте закреплённые ONNX-артефакты E5 и SigLIP2, а также Python-зависимости для benchmark и CatBoost.
+
+```powershell
+$corpus = '.local/output/quality-corpus'
+$photos = '.local/output/reviewed-photos'
+$replay = '.local/output/feedback-dataset'
+$env:HF_HOME = (Join-Path (Get-Location) '.cache/huggingface')
+$env:HF_HUB_OFFLINE = '1'
+go build -trimpath -o .local/ranking-replay.exe ./cmd/ranking-replay
+python ml/benchmark_ranking.py --corpus $corpus --photos $photos --replay $replay --go-ranker .local/ranking-replay.exe --output .local/output/ranking-eval
+```
+
+Отчёт отдельно измеряет полноту пула, качество порядка на одинаковых кандидатах и сквозную выдачу. Гибрид переиспользует Go-ранжирование. Кандидаты, права и реакции в этом сравнении заданы синтетическим сценарием. Захват Supabase содержит только состоявшиеся показы и проверяется отдельно по временным границам, хешам и наблюдаемым действиям. Скрипт сохраняет локальные отчёт и веса для исследования. Три модели обучаются на CPU с фиксированными seed, а раннюю остановку определяет validation. Для сравнения скрипт усредняет предсказания трёх моделей.
