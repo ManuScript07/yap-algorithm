@@ -4,6 +4,7 @@ import argparse
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import ipaddress
 import math
 import os
 from pathlib import Path
@@ -11,14 +12,18 @@ import threading
 
 if __package__:
     from .embedding import encode_batch
+    from .model_artifacts import (
+        EMBEDDING_ID, FEATURES, FEATURE_VERSION, MODEL, REVISION, DIMENSIONS,
+        TEXT_PREPROCESSING, TEXT_WEIGHTS, load_research_ranker, load_text_tokenizer,
+        manifest_id, resolve_text, text_manifest,
+    )
 else:
     from embedding import encode_batch
-
-MODEL = "intfloat/multilingual-e5-small"
-REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
-EMBEDDING_ID = f"{MODEL}@{REVISION}:onnx-int8:query"
-FEATURES = ["semantic", "social", "quality", "freshness", "negative_similarity", "low_exposure", "nearby", "seen"]
-DIMENSIONS = 384
+    from model_artifacts import (
+        EMBEDDING_ID, FEATURES, FEATURE_VERSION, MODEL, REVISION, DIMENSIONS,
+        TEXT_PREPROCESSING, TEXT_WEIGHTS, load_research_ranker, load_text_tokenizer,
+        manifest_id, resolve_text, text_manifest,
+    )
 
 
 def main():
@@ -27,32 +32,26 @@ def main():
     parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--ranker", type=Path)
     parser.add_argument("--allow-research-ranker", action="store_true")
-    parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--threads", type=int, choices=range(1, 9), default=2)
     args = parser.parse_args()
+    if args.ranker and (not args.allow_research_ranker or not ipaddress.ip_address(args.host).is_loopback):
+        parser.error("research ranker requires explicit opt-in and a loopback address")
     os.environ.setdefault("USE_TORCH", "0")
     os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
-    from transformers import AutoTokenizer
-    from huggingface_hub import hf_hub_download
     import onnxruntime as ort
-    tokenizer = AutoTokenizer.from_pretrained(MODEL, revision=REVISION)
-    model_path = hf_hub_download(MODEL, "onnx/model_qint8_avx512_vnni.onnx", revision=REVISION)
+
+    files = resolve_text()
+    artifact_id = manifest_id(text_manifest(args.threads))
+    tokenizer = load_text_tokenizer(files)
     options = ort.SessionOptions()
     options.intra_op_num_threads = args.threads
     options.inter_op_num_threads = 1
-    encoder = ort.InferenceSession(model_path, sess_options=options, providers=["CPUExecutionProvider"])
+    encoder = ort.InferenceSession(str(files[TEXT_WEIGHTS]), sess_options=options, providers=["CPUExecutionProvider"])
     gate = threading.Lock()
     ranker = None
     rank_version = None
     if args.ranker:
-        from catboost import CatBoostRanker
-        meta = json.loads(args.ranker.with_suffix(".json").read_text(encoding="utf-8"))
-        if meta["feature_version"] != "hybrid-v1" or meta["features"] != FEATURES or meta["embedding_model"] != EMBEDDING_ID:
-            raise ValueError("Incompatible ranking artifact")
-        if not meta.get("eligible_for_production") and not args.allow_research_ranker:
-            raise ValueError("Research-only ranker; use --allow-research-ranker for local experiments")
-        ranker = CatBoostRanker()
-        ranker.load_model(str(args.ranker))
-        rank_version = meta["version"]
+        ranker, rank_version = load_research_ranker(args.ranker)
 
     embedding_cache = OrderedDict()
 
@@ -66,7 +65,8 @@ def main():
             missing = list(dict.fromkeys(text for text in texts if text not in embedding_cache))
             if missing:
                 pooled = encode_batch(
-                    encoder, tokenizer, missing, prefix="query: ", pooling="mean", max_tokens=512,
+                    encoder, tokenizer, missing, prefix=TEXT_PREPROCESSING["prefix"],
+                    pooling=TEXT_PREPROCESSING["pooling"], max_tokens=TEXT_PREPROCESSING["max_tokens"],
                 )
                 for text, vector in zip(missing, pooled.tolist()):
                     embedding_cache[text] = vector
@@ -92,7 +92,7 @@ def main():
 
         def do_GET(self):
             if self.path == "/healthz":
-                self.reply(200, {"embedding_model": EMBEDDING_ID, "ranker": rank_version})
+                self.reply(200, {"embedding_model": EMBEDDING_ID, "artifact_id": artifact_id, "ranker": rank_version})
             else:
                 self.reply(404, {"error": "not_found"})
 
@@ -119,7 +119,7 @@ def main():
                         self.reply(503, {"error": "ranker_not_loaded"})
                         return
                     features = data["features"]
-                    if data["feature_version"] != "hybrid-v1" or not 0 < len(features) <= 1200:
+                    if data["feature_version"] != FEATURE_VERSION or not 0 < len(features) <= 1200:
                         raise ValueError("features")
                     if any(len(row) != len(FEATURES) or any(not isinstance(x, (int, float)) or not math.isfinite(x) for x in row) for row in features):
                         raise ValueError("features")
@@ -136,7 +136,8 @@ def main():
         def log_message(self, *args):
             pass  # Never log input texts or authorization headers.
 
-    print(json.dumps({"ready": True, "embedding_model": EMBEDDING_ID, "ranker": rank_version}), flush=True)
+    print(json.dumps({"ready": True, "embedding_model": EMBEDDING_ID,
+                      "artifact_id": artifact_id, "ranker": rank_version}), flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

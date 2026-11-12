@@ -170,6 +170,8 @@ class Worker:
 
 
 def main():
+    from model_artifacts import VISION_SPACE
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--threads", type=int, choices=(1, 2), default=2)
     parser.add_argument("--max-jobs", type=int, help="stop at the given number of jobs or when the queue is idle")
@@ -180,6 +182,8 @@ def main():
                       TRANSFORMERS_VERBOSITY="error", OPENBLAS_NUM_THREADS=str(args.threads))
     model = MODELS["siglip2"]
     files, space = artifacts(model, False)
+    if space["id"] != VISION_SPACE:
+        raise ValueError("vision artifact does not match the pinned space")
     storage = PreparedStorage(os.environ.get("SUPABASE_URL", ""), os.environ.get("SUPABASE_ANON_KEY", ""),
                               os.environ.get("SUPABASE_VISION_TOKEN", ""))
     with connect(os.environ.get("VISION_DATABASE_URL", "")) as db:

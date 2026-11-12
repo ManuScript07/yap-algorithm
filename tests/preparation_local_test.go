@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -187,7 +188,16 @@ func TestSupabaseLocalPreparation(t *testing.T) {
 		a := f.create(t, "Batch outage one", "public")
 		b := f.create(t, "Batch outage two", "public")
 		sbExec(t, p, "update recsys.index_jobs set job_kind='backfill',available_at='1900-01-01'where post_id=any($1::uuid[])", []string{a, b})
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+		var ready atomic.Bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !ready.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"revision": sbModel, "embeddings": [][]float64{sbVector(), sbVector()},
+			})
+		}))
 		defer server.Close()
 		processor := application.BatchIndexer{Repository: repo, Encoder: model.New(server.URL, sbModel), Kind: "backfill", Size: 2}
 		if worked, err := processor.Once(ctx); !worked || err == nil {
@@ -199,6 +209,20 @@ func TestSupabaseLocalPreparation(t *testing.T) {
 		}
 		if err := p.QueryRow(ctx, "select count(*)from recsys.post_embeddings where post_id=any($1::uuid[])", []string{a, b}).Scan(&embeddings); err != nil || embeddings != 0 {
 			t.Fatal("partial vectors after outage", err)
+		}
+		page := stage5RPC(t, f.viewer, "get_for_you_feed", map[string]int{"requested_limit": 10}, 200)
+		if len(page["items"].([]any)) == 0 {
+			t.Fatal("model outage prevented fallback reads")
+		}
+		ready.Store(true)
+		sbExec(t, p, "update recsys.index_jobs set available_at='1900-01-01' where post_id=any($1::uuid[])", []string{a, b})
+		restarted := application.BatchIndexer{Repository: repo, Encoder: model.New(server.URL, sbModel), Kind: "backfill", Size: 2}
+		if worked, err := restarted.Once(ctx); !worked || err != nil {
+			t.Fatalf("restarted indexer could not reclaim the durable batch: %v", err)
+		}
+		if err := p.QueryRow(ctx, "select count(*) from recsys.post_embeddings where post_id=any($1::uuid[]) and model=$2",
+			[]string{a, b}, sbModel).Scan(&embeddings); err != nil || embeddings != 2 {
+			t.Fatalf("expected both recovered vectors, got %d: %v", embeddings, err)
 		}
 	})
 	t.Run("obsolete_embedding_space_cannot_replace_current_vector", func(t *testing.T) {
@@ -216,6 +240,22 @@ func TestSupabaseLocalPreparation(t *testing.T) {
 		var space string
 		if err := p.QueryRow(ctx, "select model from recsys.post_embeddings where post_id=$1", post).Scan(&space); err != nil || space != sbModel {
 			t.Fatal("obsolete space replaced active vector", err)
+		}
+		sbExec(t, p, "update recsys.post_embeddings set model='retired-embedding-space' where post_id=$1", post)
+		sbExec(t, p, "update recsys.index_jobs set done_at=statement_timestamp() where post_id=$1 and model=$2", post, sbModel)
+		if _, err := repo.EnqueueBackfill(ctx, "", 500); err != nil {
+			t.Fatal(err)
+		}
+		sbExec(t, p, "update recsys.index_jobs set available_at='1900-01-01' where post_id=$1 and model=$2", post, sbModel)
+		jobs, err := repo.ClaimBatch(ctx, "backfill", 1)
+		if err != nil || len(jobs) != 1 || jobs[0].PostID != post {
+			t.Fatalf("active-space backfill was not enqueued: %v", err)
+		}
+		if err := repo.CompleteBatch(ctx, []application.IndexCompletion{{Job: jobs[0], Vector: sbVector()}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.QueryRow(ctx, "select model from recsys.post_embeddings where post_id=$1", post).Scan(&space); err != nil || space != sbModel {
+			t.Fatalf("active-space backfill did not replace the old vector: %v", err)
 		}
 	})
 	t.Run("discovery_candidates_use_author_coverage_across_posts", func(t *testing.T) {

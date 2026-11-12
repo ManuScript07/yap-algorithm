@@ -19,7 +19,12 @@ type Client struct {
 }
 
 func New(url, revision string) *Client {
-	return &Client{url, revision, &http.Client{Timeout: 15 * time.Second}}
+	return &Client{url, revision, &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}}
 }
 func (c *Client) call(ctx context.Context, path string, input, output any) error {
 	b, e := json.Marshal(input)

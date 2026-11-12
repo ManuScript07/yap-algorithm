@@ -68,7 +68,7 @@ def main():
     validation, testing = evaluate(valid), evaluate(test)
     origin = "synthetic" if any(r.get("origin") != "pilot" for r in rows) else "pilot"
     version = "catboost-v1-" + hashlib.sha256(raw).hexdigest()[:12]
-    manifest = {"version": version, "feature_version": "hybrid-v1", "features": FEATURES, "embedding_model": EMBEDDING_ID, "origin": origin, "train_groups": len(train), "validation": validation, "test": testing, "data_sha256": hashlib.sha256(raw).hexdigest(), "eligible_for_production": origin == "pilot" and testing["groups"] >= 100 and testing["paired_delta_95ci"][0] > 0, "label_note": "Observed positive-action proxy; absence is not an explicit dislike. Historical exposure is biased."}
+    manifest = {"version": version, "feature_version": "hybrid-v1", "features": FEATURES, "embedding_model": EMBEDDING_ID, "origin": origin, "train_groups": len(train), "validation": validation, "test": testing, "data_sha256": hashlib.sha256(raw).hexdigest(), "eligible_for_production": False, "label_note": "Legacy fixture experiment. Historical exposure is biased."}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     model.save_model(str(args.out))
     args.out.with_suffix(".json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

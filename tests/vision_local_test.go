@@ -49,6 +49,9 @@ func TestSupabaseLocalVision(t *testing.T) {
 		has_function_privilege('authenticated','recsys.claim_vision_photo(uuid)','EXECUTE')
 		or has_table_privilege('service_role','recsys.vision_embeddings','SELECT')
 		or has_function_privilege('yap_feed_media_worker','recsys.complete_vision_photo(uuid,uuid,text,text,extensions.vector)','EXECUTE')
+		or has_function_privilege('authenticated','recsys.set_vision_rollout(text,uuid[])','EXECUTE')
+		or has_function_privilege('service_role','recsys.set_vision_rollout(text,uuid[])','EXECUTE')
+		or has_function_privilege('yap_recommendation_worker','recsys.set_vision_rollout(text,uuid[])','EXECUTE')
 		from recsys.vision_settings`).Scan(&enabled, &exposed)
 	if err != nil || enabled || exposed {
 		t.Fatalf("vision pilot should be off and restricted: %v", err)
@@ -87,9 +90,8 @@ func TestSupabaseLocalVision(t *testing.T) {
 		}
 		sbExec(t, p, "delete from media.cleanup_jobs where path like $1", f.author+"/%")
 	})
-	sbExec(t, p, "insert into recsys.vision_viewers(slot,user_id) values(1,$1)", f.viewer)
-	sbExec(t, p, "update recsys.vision_settings set enabled=true")
-	t.Cleanup(func() { sbExec(t, p, "update recsys.vision_settings set enabled=false") })
+	sbExec(t, p, "select recsys.set_vision_rollout('shadow')")
+	t.Cleanup(func() { sbExec(t, p, "select recsys.set_vision_rollout('off')") })
 
 	media, err := postgres.OpenMediaRepository(ctx, os.Getenv("YAP_SUPABASE_MEDIA_DSN"), 4)
 	if err != nil {
@@ -236,6 +238,13 @@ func TestSupabaseLocalVision(t *testing.T) {
 		t.Fatal("private photo was indexed")
 	}
 	_, rec := stage5Worker(t)
+	shadow := topicPreparedPage(t, p, rec.WithVision(), f.viewer, "hybrid-v2")
+	sbExec(t, p, "select recsys.set_vision_rollout('serve',array[$1::uuid])", f.viewer)
+	var rollout []byte
+	err = p.QueryRow(ctx, "select recsys.set_vision_rollout('serve',array[$1::uuid])", f.viewer).Scan(&rollout)
+	if err != nil || !strings.Contains(string(rollout), `"changed_viewers": 0`) {
+		t.Fatalf("repeating the rollout should leave the active build alone: %v", err)
+	}
 	ranker := application.Personalizer{Repository: rec.WithVision()}
 	for pass := 0; pass < 30; pass++ {
 		worked, err := ranker.Once(ctx)
@@ -262,6 +271,28 @@ func TestSupabaseLocalVision(t *testing.T) {
 		t.Fatal("Supabase RPC did not return the expected authorized visual candidate")
 	}
 	t.Logf("photo publication to vector=%s, publication to observed pool=%s", indexed.Sub(photoPublished), time.Since(photoPublished))
+	// Disabling the pilot while a vision build is leased must prevent it
+	// from publishing, even if the operator quickly enables the same cohort.
+	sbExec(t, p, "select private.queue_recommendation_refresh($1,revision,true) from recsys.user_states where user_id=$1", f.viewer)
+	oldJob, claimed, err := rec.ClaimRefresh(ctx)
+	if err != nil || !claimed || oldJob.UserID != f.viewer {
+		t.Fatalf("vision build was not leased: %v", err)
+	}
+	sbExec(t, p, "select recsys.set_vision_rollout('off')")
+	replay := stage5RPC(t, f.viewer, "get_for_you_feed", map[string]any{
+		"requested_session": page["session_id"], "after_position": -1, "requested_limit": 20,
+	}, 200)
+	if replay["session_id"] != page["session_id"] {
+		t.Fatal("rollback did not preserve an open session")
+	}
+	rolledBack := topicPreparedPage(t, p, rec.WithVision(), f.viewer, "hybrid-v2")
+	if rolledBack["session_id"] == page["session_id"] || rolledBack["session_id"] == shadow["session_id"] {
+		t.Fatal("new session reused a previous pilot snapshot")
+	}
+	sbExec(t, p, "select recsys.set_vision_rollout('serve',array[$1::uuid])", f.viewer)
+	if _, err := rec.WithVision().LoadProfile(ctx, oldJob); err == nil {
+		t.Fatal("rollout accepted a lease from the previous activation")
+	}
 	stage5RPC(t, f.viewer, "set_recommendation_topics", topicIntent(domain.UUID(), 1, 0, []string{"animals"}), 200)
 	topicPreparedPage(t, p, rec.WithVision(), f.viewer, "hybrid-v2-vision-topics-v1")
 	stage5RPC(t, f.viewer, "reset_recommendation_interests", map[string]string{"requested_id": domain.UUID()}, 200)

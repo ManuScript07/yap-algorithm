@@ -53,3 +53,18 @@ func TestBatchEncoderRejectsMalformedResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestModelRequestDoesNotForwardTextOnRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("model client followed a redirect")
+	}))
+	defer target.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	if _, err := New(server.URL, "test-space").EncodeBatch(context.Background(), []string{"private sample"}); err == nil {
+		t.Fatal("model redirect was accepted")
+	}
+}

@@ -15,6 +15,7 @@ import time
 from benchmark_text import peak_rss_bytes
 from dataset import SPLITS, canonical, digest, publish_files
 from feedback import instant
+from model_artifacts import ranker_manifest, runtime_versions
 from ranking_fixture import build, encode, fixture_hash, utility
 from service import EMBEDDING_ID, FEATURES
 
@@ -223,7 +224,7 @@ def summarize(cases, protocol):
 
 
 def train(cases, protocol, identity):
-    from catboost import CatBoostRanker, Pool, __version__
+    from catboost import CatBoostRanker, Pool
     import numpy as np
 
     def grouped_pool(split):
@@ -241,6 +242,7 @@ def train(cases, protocol, identity):
     learned, files, manifests = [], {}, []
     params = dict(protocol["catboost"])
     early_stop = params.pop("early_stopping_rounds")
+    runtime = runtime_versions(("catboost", "numpy"))
     started = time.process_time()
     for seed in protocol["seeds"]:
         model = CatBoostRanker(**params, random_seed=seed, task_type="CPU", verbose=False, allow_writing_files=False)
@@ -250,10 +252,8 @@ def train(cases, protocol, identity):
             model.save_model(str(path))
             weights = path.read_bytes()
         sha = digest(weights)
-        provenance = {**identity, "weights_sha256": sha, "seed": seed, "catboost": __version__,
-                      "params": protocol["catboost"], "origin": "synthetic", "eligible_for_production": False,
-                      "features": FEATURES, "trees": model.tree_count_}
-        provenance["model_id"] = "catboost-" + digest(canonical(provenance))[:20]
+        provenance = ranker_manifest({**identity, "weights_sha256": sha, "seed": seed, "runtime": runtime,
+                                      "params": protocol["catboost"], "trees": model.tree_count_})
         files[f"ranker-{seed}.cbm"] = weights
         files[f"ranker-{seed}.json"] = canonical(provenance)
         manifests.append(provenance)
@@ -300,9 +300,12 @@ def main():
     captured = replay(args.replay, protocol["utility"])
     cases, identity = build(args.corpus, args.photos, protocol)
     identity.update(fixture_sha256=fixture_hash(cases), protocol_sha256=digest(raw), embedding_space=EMBEDDING_ID,
+                    split_sha256={split: fixture_hash([case for case in cases if case["split"] == split])
+                                  for split in SPLITS},
                     ranker_binary_sha256=digest(args.go_ranker.read_bytes()),
                     code_sha256={p.name: digest(p.read_bytes()) for p in
-                                 (Path(__file__), Path(__file__).with_name("ranking_fixture.py"))})
+                                 (Path(__file__), Path(__file__).with_name("ranking_fixture.py"),
+                                  Path(__file__).with_name("model_artifacts.py"))})
     run_go(args.go_ranker, cases)
     models, training = train(cases, protocol, identity)
     evaluation = {split: summarize([c for c in cases if c["split"] == split], protocol) for split in SPLITS}
