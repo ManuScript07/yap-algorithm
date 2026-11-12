@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.6.0
+  version: 1.7.0
   description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
     session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
     enforce optimistic action_version. Internal vectors and scores are never returned.
@@ -11,6 +11,33 @@ security:
 - apiKey: []
   bearer: []
 paths:
+  /rest/v1/rpc/get_for_you_feed_v2:
+    post:
+      operationId: getForYouFeedV2
+      description: Create one UUID per refresh and reuse it on retries. For subsequent calls keep the session UUID
+        and pass next_cursor as requested_cursor. Keep the page size unchanged when retrying the same cursor.
+        An empty page with status continue has a new cursor. An exhausted page has no cursor and can contain
+        the final items. A session expires after 20 minutes idle or when superseded by opening a fifth session.
+        After expiry or an interests reset, generate a new session UUID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requested_session]
+              properties:
+                requested_session: {type: string, format: uuid}
+                requested_cursor: {type: [string, 'null'], format: uuid, default: null}
+                requested_limit: {type: integer, minimum: 1, maximum: 30, default: 20}
+      responses:
+        '200':
+          description: Stable page or checkpoint, with current access applied.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScrollPage'}
+        default: {$ref: '#/components/responses/RPCError'}
   /rest/v1/rpc/get_for_you_feed:
     post:
       operationId: getForYouFeed
@@ -1181,6 +1208,31 @@ components:
         properties:
           action_version: {type: integer, format: int64, minimum: 0}
           liked: {type: boolean}
+    ScrollPage:
+      type: object
+      required: [contract_version, session_id, expires_at, items, has_more, next_cursor, status]
+      properties:
+        contract_version: {type: integer, const: 2}
+        session_id: {type: string, format: uuid}
+        expires_at: {type: string, format: date-time}
+        has_more: {type: boolean}
+        next_cursor: {type: [string, 'null'], format: uuid}
+        status: {type: string, enum: [page, continue, exhausted]}
+        items:
+          type: array
+          maxItems: 30
+          items:
+            type: object
+            required: [position, delivery_id, delivery_expires_at, post, reasons, model]
+            properties:
+              position: {type: integer, minimum: 0}
+              delivery_id: {type: string, format: uuid}
+              delivery_expires_at: {type: string, format: date-time}
+              post: {$ref: '#/components/schemas/Post'}
+              reasons:
+                type: array
+                items: {type: string}
+              model: {type: string, description: Producing model per item. Archive items use archive-v2.}
     FeedPage:
       type: object
       required: [contract_version, session_id, items, next_cursor, has_more, expires_at, model, versions, refresh]

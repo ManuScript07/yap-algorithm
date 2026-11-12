@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,6 +106,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	readers, authors := users[:60], users[60:]
 	withExport := os.Getenv("YAP_FEED_PERF_EXPORT") == "1"
 	withTopics := os.Getenv("YAP_FEED_PERF_TOPICS") == "1"
+	withScroll := os.Getenv("YAP_FEED_PERF_SCROLL") == "1"
 	var exportConn *pgx.Conn
 	var exportCohort, exportDir string
 	if withExport {
@@ -183,6 +185,39 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	if pageSize != 10 {
 		output += fmt.Sprintf("-p%d", pageSize)
 	}
+	type scrollSlot struct {
+		first, deep scrollPage
+		seen        map[string]bool
+	}
+	scrolls := make([]scrollSlot, len(readers))
+	if withScroll {
+		for i := range readers {
+			if i%4 != 0 {
+				continue
+			}
+			slot := &scrolls[i]
+			slot.seen = make(map[string]bool)
+			session := domain.UUID()
+			cursor := ""
+			for attempts := 0; attempts < 40; attempts++ {
+				page := readScroll(t, readers[i], session, cursor, 30)
+				for _, item := range page.Items {
+					slot.seen[item.Post.ID] = true
+				}
+				cursor = page.Next
+				if len(page.Items) == 30 && page.Items[0].Position >= 200 {
+					slot.deep = page
+					break
+				}
+				if cursor == "" {
+					t.Fatal("scroll benchmark could not reach the archive")
+				}
+			}
+			if slot.deep.Next == "" {
+				t.Fatal("scroll benchmark did not prepare a deep cursor")
+			}
+		}
+	}
 	if mode != "off" {
 		modelURL := "http://127.0.0.1:8091"
 		if mode == "worker" {
@@ -207,6 +242,9 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		startPreparationWorker(t, modelURL, filepath.Join("..", ".local", output+"-worker.log"))
 	}
 	names := []string{"get_for_you_feed", "get_friends_feed", "get_nearby_feed"}
+	if withScroll {
+		names[0] = "get_for_you_feed_v2"
+	}
 	type slot struct {
 		sync.Mutex
 		sequence  int
@@ -241,6 +279,21 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 						args["after_position"] = s.first.Next.After
 					}
 				}
+				isScroll := withScroll && surface == 0
+				if isScroll {
+					scroll := &scrolls[reader]
+					switch {
+					case reader%4 == 0:
+						kind = "deep"
+						args = scrollArgs(scroll.deep.Session, scroll.deep.Next, pageSize)
+					case kind == "first":
+						args = scrollArgs(domain.UUID(), "", pageSize)
+					case kind == "next":
+						args = scrollArgs(scroll.first.Session, scroll.first.Next, pageSize)
+					default:
+						args = scrollArgs(scroll.first.Session, "", pageSize)
+					}
+				}
 				before := time.Now()
 				admission := before.Sub(work.due)
 				body, status, err := client.rpc(tokens[reader], names[surface], args)
@@ -257,6 +310,9 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 				timedOut := errors.As(err, &netError) && netError.Timeout()
 				if err != nil || status != 200 {
 					problem = fmt.Sprintf("%s/%s status=%d transport=%v", names[surface], kind, status, err)
+				} else if isScroll {
+					problem = checkBenchmarkScroll(body, kind, pageSize, &scrolls[reader].first,
+						&scrolls[reader].deep, scrolls[reader].seen)
 				} else if json.Unmarshal(body, &page) != nil || len(page.Items) != pageSize {
 					problem = fmt.Sprintf("%s/%s malformed or unfilled page", names[surface], kind)
 				} else if surface == 0 && page.Model != "personalized-v2" {
@@ -394,7 +450,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		aggregates[name] = summarizeFeedTiming(httpTimes)
 		endToEnd[name] = summarizeFeedTiming(totalTimes)
 		latencyBudgetMet = latencyBudgetMet && aggregates[name].P95 <= 300 && aggregates[name].P99 <= 800
-		for _, kind := range []string{"first", "next", "replay"} {
+		for _, kind := range []string{"first", "next", "replay", "deep"} {
 			var times []float64
 			for _, sample := range samples {
 				if sample.RPC == name && sample.Page == kind {
@@ -429,6 +485,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	}
 	report := map[string]any{"mode": mode, "label": label, "cold_fallback_http_ms": summarizeFeedTiming(fallbackMS), "target_per_minute": rate, "duration_seconds": seconds, "page_size": pageSize, "elapsed_seconds": elapsed.Seconds(), "arrivals": count, "completed": len(samples), "admission_dropped": dropped, "admission_ms": summarizeFeedTiming(admission), "http_ms": aggregates, "scheduled_end_to_end_ms": endToEnd, "http_latency_budget_met": latencyBudgetMet, "achieved_completions_per_minute": float64(len(samples)) * 60 / elapsed.Seconds(), "failures": failures, "max_sampled_lock_waiters": maxLocks, "wait_monitor_samples": monitorSamples, "wait_monitor_errors": monitorErrors, "outcomes": outcomes, "max_sampled_active_connections": maxActive, "backfill_done": done, "samples": samples, "note": "60 readers; 96 authors; 2000 warm technical vectors + 2000 background posts; sample p99 is descriptive, not a sustained SLA"}
 	report["export_enabled"], report["export_http_overlap_ms"], report["exported_facts"] = withExport, summarizeFeedTiming(captureTimes), exported
+	report["scroll_enabled"] = withScroll
 	if withExport {
 		t.Logf("dataset captures=%d facts=%d p95=%.2fms", len(captureTimes), exported, summarizeFeedTiming(captureTimes).P95)
 	}
@@ -466,8 +523,54 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 				t.Errorf("%s missed minimum-tier HTTP latency budget", name)
 			}
 		}
+		if withScroll {
+			deep := aggregates[names[0]+"/deep"]
+			if deep.Count == 0 || deep.P95 > 300 || deep.P99 > 800 {
+				t.Errorf("archive pages missed minimum-tier HTTP latency budget: %+v", deep)
+			}
+			t.Logf("archive HTTP ms n=%d p95=%.2f p99=%.2f", deep.Count, deep.P95, deep.P99)
+		}
 	}
 	if mode != "off" && done == 0 {
 		t.Error("background worker made no indexing progress")
 	}
+}
+
+func checkBenchmarkScroll(body []byte, kind string, pageSize int, first, deep *scrollPage, seen map[string]bool) string {
+	var page scrollPage
+	if json.Unmarshal(body, &page) != nil || page.Contract != 2 || len(page.Items) != pageSize || page.Next == "" {
+		return "scroll benchmark returned an invalid or unfilled page"
+	}
+	if kind == "deep" {
+		for _, item := range page.Items {
+			if item.Position < 200 || item.Model != "archive-v2" || seen[item.Post.ID] {
+				return "deep scroll returned an unexpected item"
+			}
+			seen[item.Post.ID] = true
+		}
+		*deep = page
+		return ""
+	}
+	for _, item := range page.Items {
+		if item.Model != "personalized-v2" {
+			return "unexpected fallback in prepared scroll benchmark"
+		}
+	}
+	switch kind {
+	case "first":
+		*first = page
+	case "next":
+		for _, item := range page.Items {
+			for _, old := range first.Items {
+				if item.Post.ID == old.Post.ID {
+					return "scroll repeated a post between pages"
+				}
+			}
+		}
+	case "replay":
+		if !slices.Equal(page.Items, first.Items) || page.Next != first.Next {
+			return "scroll replay changed items or receipts"
+		}
+	}
+	return ""
 }
