@@ -104,6 +104,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	})
 	readers, authors := users[:60], users[60:]
 	withExport := os.Getenv("YAP_FEED_PERF_EXPORT") == "1"
+	withTopics := os.Getenv("YAP_FEED_PERF_TOPICS") == "1"
 	var exportConn *pgx.Conn
 	var exportCohort, exportDir string
 	if withExport {
@@ -142,7 +143,17 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 			t.Fatalf("cold fallback status=%d error=%v", status, err)
 		}
 	}
+	if withTopics {
+		for _, token := range tokens {
+			_, status, err := client.rpc(token, "set_recommendation_topics",
+				topicIntent(domain.UUID(), 1, 0, []string{"food", "games", "nature", "technology"}))
+			if err != nil || status != 200 {
+				t.Fatalf("topic fixture selection failed: status=%d err=%v", status, err)
+			}
+		}
+	}
 	sbExec(t, p, "update recsys.refresh_jobs set available_at=statement_timestamp()where user_id=any($1::uuid[])", readers)
+	warmStarted := time.Now()
 	for i := 0; i < 120; i++ {
 		worked, err := (application.Personalizer{Repository: rec}).Once(ctx)
 		if err != nil {
@@ -155,6 +166,13 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	var prepared int
 	if err := p.QueryRow(ctx, "select count(*)from recsys.user_states where user_id=any($1::uuid[])and prepared_at is not null and profile_complete", readers).Scan(&prepared); err != nil || prepared != 60 {
 		t.Fatalf("warm fixtures prepared=%d err=%v", prepared, err)
+	}
+	t.Logf("warm preparation readers=%d topics=%t elapsed=%s", prepared, withTopics, time.Since(warmStarted))
+	if withTopics {
+		var topicSnapshots int
+		if err := p.QueryRow(ctx, "select count(*) from recsys.user_states u join recsys.feed_snapshots s on s.id=u.current_snapshot where u.user_id=any($1::uuid[]) and s.policy_version='hybrid-v2-topics-v1'", readers).Scan(&topicSnapshots); err != nil || topicSnapshots != 60 {
+			t.Fatalf("topics actually used for %d/60 snapshots: %v", topicSnapshots, err)
+		}
 	}
 	// Same backlog in all modes, older than the foreground corpus. Technical
 	// warm vectors are constant: this benchmark does not evaluate model quality.

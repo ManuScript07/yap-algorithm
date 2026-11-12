@@ -64,7 +64,12 @@ func (r *RecommendationRepository) LoadProfile(ctx context.Context, job applicat
 		Revision        int64     `json:"revision"`
 		At              time.Time `json:"at"`
 		NeedsEmbeddings bool      `json:"needs_embeddings"`
-		Evidence        []struct {
+		TopicPrior      *struct {
+			Version        int64    `json:"version"`
+			CatalogVersion int      `json:"catalog_version"`
+			Vectors        []string `json:"vectors"`
+		} `json:"topic_prior"`
+		Evidence []struct {
 			PostID  string    `json:"post_id"`
 			Version int       `json:"post_version"`
 			Vector  string    `json:"vector"`
@@ -85,6 +90,19 @@ func (r *RecommendationRepository) LoadProfile(ctx context.Context, job applicat
 	if r.vision {
 		r.loadVision(ctx, job, &input)
 	}
+	if wire.TopicPrior != nil {
+		if wire.TopicPrior.Version < 1 || wire.TopicPrior.CatalogVersion < 1 || len(wire.TopicPrior.Vectors) < 1 || len(wire.TopicPrior.Vectors) > 4 {
+			return application.ProfileInput{}, errors.New("invalid topic prior")
+		}
+		input.Topics.Version, input.Topics.CatalogVersion = wire.TopicPrior.Version, wire.TopicPrior.CatalogVersion
+		for _, item := range wire.TopicPrior.Vectors {
+			vector, err := domain.NormalizeVector(domain.ParseVector(item))
+			if err != nil {
+				return application.ProfileInput{}, errors.New("invalid topic vector")
+			}
+			input.Topics.Vectors = append(input.Topics.Vectors, vector)
+		}
+	}
 	return input, nil
 }
 
@@ -103,7 +121,7 @@ func profileWire(profile []ranking.Interest) ([]map[string]any, error) {
 func (r *RecommendationRepository) LoadCandidates(ctx context.Context, job application.RefreshJob, input application.ProfileInput, profile []ranking.Interest) ([]ranking.Candidate, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	profiles, err := profileWire(profile)
+	profiles, err := profileWire(ranking.TopicRetrieval(profile, input.Topics.Vectors, input.Topics.Confidence))
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +191,12 @@ func (r *RecommendationRepository) Publish(ctx context.Context, job application.
 	if vision {
 		payload["vision_fence"] = result.Input.VisualSources
 	}
+	topics := result.Input.Topics.Confidence > 0
+	if topics {
+		payload["topic_context"] = map[string]any{
+			"version": result.Input.Topics.Version, "catalog_version": result.Input.Topics.CatalogVersion,
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return false, err
@@ -184,7 +208,12 @@ func (r *RecommendationRepository) Publish(ctx context.Context, job application.
 	if vision {
 		query = "select recsys.publish_vision_recommendations($1::uuid,$2::uuid,$3::text::jsonb)"
 	}
-	err = r.pool.QueryRow(ctx, query, job.UserID, job.Lease, string(body)).Scan(&accepted)
+	if topics {
+		err = r.pool.QueryRow(ctx, "select recsys.publish_topic_recommendations($1::uuid,$2::uuid,$3::text::jsonb,$4)",
+			job.UserID, job.Lease, string(body), vision).Scan(&accepted)
+	} else {
+		err = r.pool.QueryRow(ctx, query, job.UserID, job.Lease, string(body)).Scan(&accepted)
+	}
 	return accepted, err
 }
 

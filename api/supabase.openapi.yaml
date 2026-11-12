@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.5.0
+  version: 1.6.0
   description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
     session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
     enforce optimistic action_version. Internal vectors and scores are never returned.
@@ -125,7 +125,8 @@ paths:
     post:
       operationId: resetRecommendationInterests
       description: Advances the interest epoch, invalidating old sessions and delayed telemetry. Preserves explicit
-        hidden authors, blocks and visible likes. Retry with the same requested_id to avoid performing another reset.
+        hidden authors, blocks and visible likes. Clears chosen topics. Retry with the same requested_id to avoid
+        performing another reset.
       requestBody:
         required: true
         content:
@@ -138,6 +139,64 @@ paths:
                 requested_id: {type: string, format: uuid}
       responses:
         '200': {description: 'request_id, epoch, revision and replayed.'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/get_recommendation_topics:
+    post:
+      operationId: getRecommendationTopics
+      description: Reads the localized catalog and the signed-in viewer's optional choice. Refresh this state
+        after a conflict or interest reset. Quota is 60 reads per minute and 1000 per UTC day.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                requested_language: {type: string, enum: [ru, en], default: ru}
+      responses:
+        '200':
+          description: Active catalog and viewer state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TopicCatalog'}
+        default: {$ref: '#/components/responses/RPCError'}
+  /rest/v1/rpc/set_recommendation_topics:
+    post:
+      operationId: setRecommendationTopics
+      description: Replaces the unordered selection. An empty array skips or clears it. Use the observed epoch,
+        selection version and catalog version. Retry with the same UUID and body. Retain the newest response by
+        epoch and version. A 409 requires reconciliation before submitting a new user intent. Quota is 12 writes
+        per minute and 120 per UTC day, including retries. Reading the feed requires no topic selection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requested_id, expected_epoch, expected_version, requested_catalog_version, requested_topics]
+              properties:
+                requested_id: {type: string, format: uuid}
+                expected_epoch: {type: integer, minimum: 1}
+                expected_version: {type: integer, format: int64, minimum: 0}
+                requested_catalog_version: {type: integer, minimum: 1}
+                requested_topics: {$ref: '#/components/schemas/TopicIDs'}
+      responses:
+        '200':
+          description: Stored intent receipt.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/TopicSelection'}
+                  - type: object
+                    required: [request_id, catalog_version, replayed]
+                    properties:
+                      request_id: {type: string, format: uuid}
+                      catalog_version: {type: integer, minimum: 1}
+                      replayed: {type: boolean}
+        '409': {$ref: '#/components/responses/RPCError'}
         default: {$ref: '#/components/responses/RPCError'}
   /rest/v1/rpc/get_recommendation_hidden_authors:
     post:
@@ -1085,6 +1144,35 @@ components:
               hint:
                 type: [string, 'null']
   schemas:
+    TopicIDs:
+      type: array
+      uniqueItems: true
+      maxItems: 4
+      items: {type: string, pattern: '^[a-z][a-z0-9_-]{0,31}$'}
+    TopicSelection:
+      type: object
+      required: [epoch, version, status, topics]
+      properties:
+        epoch: {type: integer, minimum: 1}
+        version: {type: integer, format: int64, minimum: 0}
+        status: {type: string, enum: [not_set, skipped, selected]}
+        topics: {$ref: '#/components/schemas/TopicIDs'}
+    TopicCatalog:
+      type: object
+      required: [catalog_version, max_selected, topics, selection]
+      properties:
+        catalog_version: {type: integer, minimum: 1}
+        max_selected: {type: integer, const: 4}
+        topics:
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            required: [id, label]
+            properties:
+              id: {type: string}
+              label: {type: string}
+        selection: {$ref: '#/components/schemas/TopicSelection'}
     Post:
       allOf:
       - {$ref: '#/components/schemas/PostBase'}

@@ -9,6 +9,11 @@ import (
 
 const Version = "hybrid-v1"
 
+const (
+	semanticFeature = 0
+	semanticWeight  = 0.46
+)
+
 // Feature order is a versioned contract with the model service and training export.
 var FeatureNames = []string{"semantic", "social", "quality", "freshness", "negative_similarity", "low_exposure", "nearby", "seen"}
 
@@ -38,7 +43,7 @@ type Interest struct {
 func Features(c Candidate, interests []Interest, now time.Time) []float64 {
 	positive, negative := 0.0, 0.0
 	for _, p := range interests {
-		sim := math.Max(0, (domain.Cosine(c.Embedding, p.Vector)-0.65)/0.35)
+		sim := semanticSimilarity(c.Embedding, p.Vector)
 		decay := math.Exp(-math.Max(0, now.Sub(p.UpdatedAt).Hours()) / (24 * 7))
 		confidence := math.Min(1, p.Weight/3) * decay
 		if p.Negative {
@@ -60,13 +65,13 @@ func Score(candidates []Candidate, interests []Interest, now time.Time) {
 		c := &candidates[i]
 		c.Features = Features(*c, interests, now)
 		f := c.Features
-		c.Score = 0.46*f[0] + 0.13*f[1] + 0.10*f[2] + 0.16*f[3] + 0.10*f[5] + 0.05*f[6] - 0.50*f[4] - 0.18*f[7]
+		c.Score = semanticWeight*f[semanticFeature] + 0.13*f[1] + 0.10*f[2] + 0.16*f[3] + 0.10*f[5] + 0.05*f[6] - 0.50*f[4] - 0.18*f[7]
 		c.Reasons = []string{}
 		if len(c.Embedding) == 0 && c.Visual > 0 && c.Visual <= 1 {
 			c.Score += 0.16 * c.Visual
 			c.Reasons = append(c.Reasons, "similar_photos")
 		}
-		if f[0] > .2 {
+		if f[semanticFeature] > .2 {
 			c.Reasons = append(c.Reasons, "similar_interests")
 		}
 		if c.Social {
@@ -79,6 +84,10 @@ func Score(candidates []Candidate, interests []Interest, now time.Time) {
 			c.Reasons = append(c.Reasons, "discover_post")
 		}
 	}
+}
+
+func semanticSimilarity(candidate, interest []float64) float64 {
+	return math.Max(0, (domain.Cosine(candidate, interest)-0.65)/0.35)
 }
 
 // Rerank uses MMR and author saturation. Ties are deterministic across retries.

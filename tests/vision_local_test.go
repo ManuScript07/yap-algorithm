@@ -262,9 +262,15 @@ func TestSupabaseLocalVision(t *testing.T) {
 		t.Fatal("Supabase RPC did not return the expected authorized visual candidate")
 	}
 	t.Logf("photo publication to vector=%s, publication to observed pool=%s", indexed.Sub(photoPublished), time.Since(photoPublished))
+	stage5RPC(t, f.viewer, "set_recommendation_topics", topicIntent(domain.UUID(), 1, 0, []string{"animals"}), 200)
+	topicPreparedPage(t, p, rec.WithVision(), f.viewer, "hybrid-v2-vision-topics-v1")
 	stage5RPC(t, f.viewer, "reset_recommendation_interests", map[string]string{"requested_id": domain.UUID()}, 200)
 	fresh := stage5RPC(t, f.viewer, "get_for_you_feed", map[string]int{"requested_limit": 20}, 200)
-	if fresh["versions"].(map[string]any)["policy"] == "hybrid-v2-vision-siglip2-v1" {
+	if strings.Contains(fmt.Sprint(fresh["versions"].(map[string]any)["policy"]), "vision") {
 		t.Fatal("reset retained the old visual profile")
+	}
+	selection := stage5RPC(t, f.viewer, "get_recommendation_topics", map[string]string{"requested_language": "ru"}, 200)
+	if selection["selection"].(map[string]any)["status"] != "not_set" {
+		t.Fatal("reset retained chosen topics in the combined pilot")
 	}
 }

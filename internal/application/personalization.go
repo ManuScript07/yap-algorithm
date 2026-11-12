@@ -19,6 +19,13 @@ type VisualSource struct {
 	PhotoID string `json:"photo_id"`
 	SHA     string `json:"sha"`
 }
+type TopicPrior struct {
+	Version        int64
+	CatalogVersion int
+	Vectors        [][]float64
+	Confidence     float64
+}
+
 type ProfileInput struct {
 	Epoch            int
 	Revision         int64
@@ -28,6 +35,7 @@ type ProfileInput struct {
 	VisualCandidates []ranking.Candidate
 	VisualEvidence   []ranking.Evidence
 	VisualSources    []VisualSource
+	Topics           TopicPrior
 }
 type RecommendationResult struct {
 	Input          ProfileInput
@@ -58,10 +66,14 @@ func (p Personalizer) Once(ctx context.Context) (bool, error) {
 	input, err := p.Repository.LoadProfile(ctx, job)
 	if err == nil {
 		profile := ranking.BuildProfile(input.Evidence, input.At)
+		if len(input.Topics.Vectors) > 0 {
+			input.Topics.Confidence = ranking.TopicConfidence(input.Evidence, input.At)
+		}
 		var candidates []ranking.Candidate
 		candidates, err = p.Repository.LoadCandidates(ctx, job, input, profile)
 		if err == nil {
 			ranking.Score(candidates, profile, input.At)
+			ranking.ApplyTopicPrior(candidates, input.Topics.Vectors, input.Topics.Confidence)
 			// Geography is a small, bounded candidate source. Semantic interests
 			// remain dominant; the chronological nearby tab is served by SQL.
 			candidates = ranking.SelectForYou(candidates)
