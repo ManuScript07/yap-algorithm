@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,13 +94,35 @@ func TestSupabaseLocalRecommendationRecovery(t *testing.T) {
 	}
 	proxied.Host = proxy.listener.Addr().String()
 	mode.Store(forwardInference)
-	stop = startPreparationWorkerProcess(t, proxied.String(), server.URL, filepath.Join(logs, "after-crash.log"))
+	recoveryLog := filepath.Join(logs, "after-crash.log")
+	stop = startPreparationWorkerProcess(t, proxied.String(), server.URL, recoveryLog)
 	awaitLocalCondition(t, p, "replacement pool", 15*time.Second, "select ("+sessions+") between 1 and 4")
 	proxy.setDown(true)
 	second := f.create(t, "A public post written while the worker lost its database connection", "public")
 	awaitLocalCondition(t, p, "worker connections to close during the fault", 10*time.Second, "select ("+sessions+")=0")
 	if err := p.QueryRow(ctx, "select count(*) from recsys.post_embeddings where post_id=$1", second).Scan(&open); err != nil || open != 0 {
 		t.Fatalf("embedding committed through the failed worker transport: %d, %v", open, err)
+	}
+	// Keep the link down until the real worker reports a longer retry delay.
+	deadline := time.Now().Add(12 * time.Second)
+	for {
+		data, err := os.ReadFile(recoveryLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.ContainsFunc(strings.Split(string(data), "\n"), func(line string) bool {
+			var event struct {
+				Message string `json:"msg"`
+				RetryMS int    `json:"retry_in_ms"`
+			}
+			return json.Unmarshal([]byte(line), &event) == nil && event.Message == "pipeline_job_failed" && event.RetryMS >= 1500
+		}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("worker kept retrying without backing off during the outage")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	proxy.setDown(false)
 	// The abandoned lease expires on its own. A stale completion cannot produce

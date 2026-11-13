@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"sync"
@@ -14,16 +15,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"yap-algorithm/internal/adapters/postgres"
 	"yap-algorithm/internal/application"
 	"yap-algorithm/internal/model"
 )
 
 const embeddingModel = "intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3:onnx-int8:query"
+const idlePollInterval = 500 * time.Millisecond
+
+// Back off independently per lane so a database outage does not turn every
+// idle poll into a new connection attempt, or synchronize retries across workers.
+func nextFailureDelay(previous time.Duration) time.Duration {
+	return min(max(idlePollInterval, 2*previous), 30*time.Second)
+}
 
 type config struct {
 	DSN, ModelURL                      string
 	Concurrency, BatchSize             int
+	DBMaxConns                         int
 	Once, RetryFailed, EnqueueBackfill bool
 	BackfillAfter                      string
 	BackfillLimit                      int
@@ -46,7 +56,14 @@ func run(ctx context.Context, options config) error {
 	if concurrency < 1 || concurrency > 8 {
 		return errors.New("concurrency must be between 1 and 8")
 	}
-	repo, err := postgres.OpenIndexRepository(ctx, dsn, embeddingModel, int32(concurrency+2))
+	connections := options.DBMaxConns
+	if connections == 0 {
+		connections = concurrency + 2
+	}
+	if connections < 1 || connections > 16 {
+		return errors.New("database pool must contain 1..16 connections")
+	}
+	repo, err := postgres.OpenIndexRepository(ctx, dsn, embeddingModel, int32(connections))
 	if err != nil {
 		return err
 	}
@@ -84,15 +101,28 @@ func run(ctx context.Context, options config) error {
 		go func() {
 			defer workers.Done()
 			pipeline := application.Pipeline{Processors: []application.Processor{interactive, indexer, interactive, scheduled, backfill}}
+			var failureDelay time.Duration
 			for ctx.Err() == nil {
 				jobCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 				worked, err := pipeline.Once(jobCtx)
 				cancel()
-				if err != nil && ctx.Err() == nil {
+				if ctx.Err() != nil {
+					return
+				}
+				wait := idlePollInterval
+				if err != nil {
 					failed.Store(true)
+					failureDelay = nextFailureDelay(failureDelay)
+					wait = failureDelay - rand.N(failureDelay/4)
 					// Error values may contain connection details or user content.
-					// Keep runtime logs free of raw database/model payloads.
-					slog.Warn("pipeline_job_failed")
+					var pgErr *pgconn.PgError
+					code := ""
+					if errors.As(err, &pgErr) {
+						code = pgErr.Code
+					}
+					slog.Warn("pipeline_job_failed", "sqlstate", code, "retry_in_ms", wait.Milliseconds())
+				} else {
+					failureDelay = 0
 				}
 				if once && (!worked || err != nil) {
 					return
@@ -101,7 +131,7 @@ func run(ctx context.Context, options config) error {
 					select {
 					case <-ctx.Done():
 						return
-					case <-time.After(500 * time.Millisecond):
+					case <-time.After(wait):
 					}
 				}
 			}
@@ -148,6 +178,7 @@ func run(ctx context.Context, options config) error {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	concurrency := flag.Int("concurrency", 2, "parallel preparation tasks (1..8)")
+	dbMaxConns := flag.Int("db-max-conns", 0, "maximum database connections (1..16, 0 uses concurrency + 2)")
 	batchSize := flag.Int("batch-size", 4, "texts per model batch (1..8)")
 	enqueueBackfill := flag.Bool("enqueue-backfill", false, "enqueue one bounded backfill range and exit")
 	backfillAfter := flag.String("backfill-after", "", "exclusive post UUID cursor for backfill")
@@ -161,7 +192,7 @@ func main() {
 	if modelURL == "" {
 		modelURL = "http://127.0.0.1:8091"
 	}
-	if err := run(ctx, config{DSN: os.Getenv("DATABASE_URL"), ModelURL: modelURL, Concurrency: *concurrency, BatchSize: *batchSize, Once: *once, RetryFailed: *retryFailed, EnqueueBackfill: *enqueueBackfill, BackfillAfter: *backfillAfter, BackfillLimit: *backfillLimit, Vision: os.Getenv("YAP_VISION_PILOT") == "1"}); err != nil {
+	if err := run(ctx, config{DSN: os.Getenv("DATABASE_URL"), ModelURL: modelURL, Concurrency: *concurrency, DBMaxConns: *dbMaxConns, BatchSize: *batchSize, Once: *once, RetryFailed: *retryFailed, EnqueueBackfill: *enqueueBackfill, BackfillAfter: *backfillAfter, BackfillLimit: *backfillLimit, Vision: os.Getenv("YAP_VISION_PILOT") == "1"}); err != nil {
 		slog.Error("worker_stopped", "error", err)
 		os.Exit(1)
 	}
