@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: YapChat Supabase personalized feed
-  version: 1.7.0
+  version: 1.8.0
   description: Internal worker has no client listener. Use these RPCs through the existing Supabase SDK and account
     session. UUIDs and versions must survive network retries. Serialize settings mutations; post actions additionally
     enforce optimistic action_version. Internal vectors and scores are never returned.
@@ -23,6 +23,11 @@ paths:
         required: true
         content:
           application/json:
+            examples:
+              first:
+                value: {"requested_session": "75000000-0000-4000-8000-000000000010", "requested_limit": 2}
+              continuation:
+                value: {"requested_session": "75000000-0000-4000-8000-000000000010", "requested_cursor": "75000000-0000-4000-8000-000000000011", "requested_limit": 2}
             schema:
               type: object
               additionalProperties: false
@@ -36,7 +41,99 @@ paths:
           description: Stable page or checkpoint, with current access applied.
           content:
             application/json:
+              examples:
+                empty_continue:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000010
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: true
+                    next_cursor: 75000000-0000-4000-8000-000000000011
+                    items: []
+                    contract_version: 2
+                    status: continue
+                final_with_item:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000010
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: false
+                    next_cursor: null
+                    items:
+                    - position: 1
+                      delivery_id: 75000000-0000-4000-8000-000000000006
+                      delivery_expires_at: '2026-11-14T10:20:00Z'
+                      post:
+                        id: 75000000-0000-4000-8000-000000000002
+                        author_id: 75000000-0000-4000-8000-000000000001
+                        author:
+                          id: 75000000-0000-4000-8000-000000000001
+                          username: fixture
+                          display_name: fixture
+                          avatar_url: null
+                          avatar_storage_path: null
+                          avatar_updated_at: null
+                        text: a🚀éz
+                        formatting:
+                          version: 1
+                          spans:
+                          - start: 0
+                            end: 2
+                            style: bold
+                          - start: 1
+                            end: 4
+                            style: italic
+                        edited: false
+                        like_count: 0
+                        view_count: 0
+                        audience: public
+                        language: en
+                        version: 1
+                        created_at: '2026-11-14T10:00:00Z'
+                        updated_at: '2026-11-14T10:00:00Z'
+                        photos: []
+                        location: null
+                        is_repost: false
+                        comment_count: 1
+                        repost_count: 0
+                        my_repost: null
+                        reposted_by: []
+                        author_relationship:
+                          author_id: 75000000-0000-4000-8000-000000000001
+                          following: false
+                          version: 0
+                          is_friend: false
+                          can_follow: true
+                        action_version: 0
+                        liked: false
+                      reasons:
+                      - archive
+                      model: archive-v2
+                    contract_version: 2
+                    status: exhausted
               schema: {$ref: '#/components/schemas/ScrollPage'}
+        '404':
+          description: unknown session.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                unknown_session:
+                  value: {"code": "PT404", "message": "feed_session_not_found", "details": null, "hint": null}
+        '409':
+          description: invalidated.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                invalidated:
+                  value: {"code": "PT409", "message": "feed_session_invalidated", "details": null, "hint": null}
+        '410':
+          description: expired.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                expired:
+                  value: {"code": "PT410", "message": "feed_session_expired", "details": null, "hint": null}
         default: {$ref: '#/components/responses/RPCError'}
   /rest/v1/rpc/get_for_you_feed:
     post:
@@ -374,7 +471,7 @@ paths:
       description: Publish selected ready photos using the reserved draft ID. Photo array order is permanent. Empty
         text requires a photo. Optional location belongs to the publication, independent of nearby people visibility.
         Max 12 new posts/sliding hour, including soft-deleted. A transport retry preserves original ID and full
-        body, including photo order/location.
+        body, including formatting, photo order and location. Invalid formatting returns 22023 invalid_post_formatting.
       requestBody:
         required: true
         content:
@@ -382,7 +479,10 @@ paths:
             schema:
               type: object
               required: [requested_id]
+              dependentRequired:
+                requested_formatting: [requested_text, requested_audience, requested_language, requested_photos, requested_location]
               properties:
+                requested_formatting: {$ref: '#/components/schemas/PostFormatting'}
                 requested_id: {type: string, format: uuid}
                 requested_text: {type: string, maxLength: 1000, default: ''}
                 requested_audience:
@@ -451,7 +551,8 @@ paths:
   /rest/v1/rpc/edit_feed_post:
     post:
       operationId: editFeedPost
-      description: Edit text only. Empty text requires an attached photo. On 40001/post_version_conflict refetch;
+      description: Edit text and formatting. Omission keeps formatting on unchanged text and clears it when text changes.
+        Send an empty spans array to clear formatting explicitly. Empty text requires an attached photo. On 40001/post_version_conflict refetch;
         never silently replay old intent with a new version. Photos and publication location remain fixed.
       requestBody:
         required: true
@@ -461,6 +562,7 @@ paths:
               type: object
               required: [requested_id, expected_version, requested_text]
               properties:
+                requested_formatting: {$ref: '#/components/schemas/PostFormatting'}
                 requested_id: {type: string, format: uuid}
                 expected_version: {type: integer, minimum: 1}
                 requested_text: {type: string, maxLength: 1000}
@@ -693,6 +795,9 @@ paths:
         required: true
         content:
           application/json:
+            examples:
+              continuation:
+                value: {"requested_session": "75000000-0000-4000-8000-000000000014", "after_position": 0, "requested_limit": 2, "requested_post": "75000000-0000-4000-8000-000000000002", "requested_sort": "popular"}
             schema:
               type: object
               additionalProperties: false
@@ -736,8 +841,82 @@ paths:
           description: Current result or safe acknowledgement for an identical request retry.
           content:
             application/json:
+              examples:
+                root_with_preview:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000014
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: true
+                    next_cursor:
+                      session_id: 75000000-0000-4000-8000-000000000014
+                      after_position: 0
+                    items:
+                    - id: 75000000-0000-4000-8000-000000000003
+                      post_id: 75000000-0000-4000-8000-000000000002
+                      root_id: 75000000-0000-4000-8000-000000000003
+                      version: 1
+                      post_version: 1
+                      action_version: 0
+                      text: root
+                      author:
+                        id: 75000000-0000-4000-8000-000000000001
+                        username: fixture
+                        display_name: fixture
+                        avatar_url: null
+                        avatar_storage_path: null
+                        avatar_updated_at: null
+                      state: active
+                      reply_to: null
+                      created_at: '2026-11-14T10:00:00Z'
+                      updated_at: '2026-11-14T10:00:00Z'
+                      like_count: 0
+                      reply_count: 1
+                      liked: false
+                      reply_preview:
+                        id: 75000000-0000-4000-8000-000000000004
+                        post_id: 75000000-0000-4000-8000-000000000002
+                        root_id: 75000000-0000-4000-8000-000000000003
+                        version: 1
+                        post_version: 1
+                        action_version: 0
+                        text: reply
+                        author:
+                          id: 75000000-0000-4000-8000-000000000001
+                          username: fixture
+                          display_name: fixture
+                          avatar_url: null
+                          avatar_storage_path: null
+                          avatar_updated_at: null
+                        state: active
+                        reply_to: null
+                        created_at: '2026-11-14T10:00:00Z'
+                        updated_at: '2026-11-14T10:00:00Z'
+                        like_count: 0
+                        reply_count: 0
+                        liked: false
+                    post_id: 75000000-0000-4000-8000-000000000002
+                    root_id: null
+                    sort: popular
+                exhausted:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000014
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: false
+                    next_cursor: null
+                    items: []
+                    post_id: 75000000-0000-4000-8000-000000000002
+                    root_id: null
+                    sort: popular
               schema:
                 $ref: '#/components/schemas/CommentPage'
+        '410':
+          description: expired.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                expired:
+                  value: {"code": "PT410", "message": "comment_session_expired", "details": null, "hint": null}
         default:
           $ref: '#/components/responses/RPCError'
   /rest/v1/rpc/get_feed_comment_replies:
@@ -752,6 +931,14 @@ paths:
         required: true
         content:
           application/json:
+            examples:
+              continuation:
+                value:
+                  requested_session: 75000000-0000-4000-8000-000000000015
+                  after_position: 0
+                  requested_limit: 2
+                  requested_post: 75000000-0000-4000-8000-000000000002
+                  requested_root: 75000000-0000-4000-8000-000000000003
             schema:
               type: object
               additionalProperties: false
@@ -785,8 +972,48 @@ paths:
           description: Current result or safe acknowledgement for an identical request retry.
           content:
             application/json:
+              examples:
+                last_reply:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000015
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: false
+                    next_cursor: null
+                    items:
+                    - id: 75000000-0000-4000-8000-000000000004
+                      post_id: 75000000-0000-4000-8000-000000000002
+                      root_id: 75000000-0000-4000-8000-000000000003
+                      version: 1
+                      post_version: 1
+                      action_version: 0
+                      text: reply
+                      author:
+                        id: 75000000-0000-4000-8000-000000000001
+                        username: fixture
+                        display_name: fixture
+                        avatar_url: null
+                        avatar_storage_path: null
+                        avatar_updated_at: null
+                      state: active
+                      reply_to: null
+                      created_at: '2026-11-14T10:00:00Z'
+                      updated_at: '2026-11-14T10:00:00Z'
+                      like_count: 0
+                      reply_count: 0
+                      liked: false
+                    post_id: 75000000-0000-4000-8000-000000000002
+                    root_id: 75000000-0000-4000-8000-000000000003
+                    sort: old
               schema:
                 $ref: '#/components/schemas/CommentPage'
+        '410':
+          description: expired.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                expired:
+                  value: {"code": "PT410", "message": "comment_session_expired", "details": null, "hint": null}
         default:
           $ref: '#/components/responses/RPCError'
   /rest/v1/rpc/get_friends_feed:
@@ -800,6 +1027,9 @@ paths:
         required: true
         content:
           application/json:
+            examples:
+              continuation:
+                value: {"requested_session": "75000000-0000-4000-8000-000000000012", "after_position": 1, "requested_limit": 2}
             schema:
               type: object
               additionalProperties: false
@@ -825,8 +1055,72 @@ paths:
           description: Current result or safe acknowledgement for an identical request retry.
           content:
             application/json:
+              examples:
+                empty_continue:
+                  value: {"session_id": "75000000-0000-4000-8000-000000000012", "expires_at": "2026-11-14T10:20:00Z", "has_more": true, "next_cursor": {"session_id": "75000000-0000-4000-8000-000000000012", "after_position": 1}, "items": []}
+                exhausted:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000012
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: false
+                    next_cursor: null
+                    items:
+                    - position: 1
+                      delivery_id: 75000000-0000-4000-8000-000000000006
+                      delivery_expires_at: '2026-11-14T10:20:00Z'
+                      post:
+                        id: 75000000-0000-4000-8000-000000000002
+                        author_id: 75000000-0000-4000-8000-000000000001
+                        author:
+                          id: 75000000-0000-4000-8000-000000000001
+                          username: fixture
+                          display_name: fixture
+                          avatar_url: null
+                          avatar_storage_path: null
+                          avatar_updated_at: null
+                        text: a🚀éz
+                        formatting:
+                          version: 1
+                          spans:
+                          - start: 0
+                            end: 2
+                            style: bold
+                          - start: 1
+                            end: 4
+                            style: italic
+                        edited: false
+                        like_count: 0
+                        view_count: 0
+                        audience: public
+                        language: en
+                        version: 1
+                        created_at: '2026-11-14T10:00:00Z'
+                        updated_at: '2026-11-14T10:00:00Z'
+                        photos: []
+                        location: null
+                        is_repost: false
+                        comment_count: 1
+                        repost_count: 0
+                        my_repost: null
+                        reposted_by: []
+                        author_relationship:
+                          author_id: 75000000-0000-4000-8000-000000000001
+                          following: false
+                          version: 0
+                          is_friend: false
+                          can_follow: true
+                        action_version: 0
+                        liked: false
               schema:
                 $ref: '#/components/schemas/FriendsPage'
+        '410':
+          description: expired.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                expired:
+                  value: {"code": "PT410", "message": "friends_session_expired", "details": null, "hint": null}
         default:
           $ref: '#/components/responses/RPCError'
   /rest/v1/rpc/get_nearby_feed:
@@ -844,6 +1138,9 @@ paths:
         required: true
         content:
           application/json:
+            examples:
+              continuation:
+                value: {"requested_session": "75000000-0000-4000-8000-000000000013", "after_position": 1, "requested_limit": 2, "requested_radius_km": 50}
             schema:
               type: object
               additionalProperties: false
@@ -860,7 +1157,88 @@ paths:
           description: Bounded chronological page; continue even after empty items when has_more is true.
           content:
             application/json:
+              examples:
+                empty_continue:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000013
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: true
+                    next_cursor:
+                      session_id: 75000000-0000-4000-8000-000000000013
+                      after_position: 1
+                    items: []
+                    radius_km: 50
+                exhausted:
+                  value:
+                    session_id: 75000000-0000-4000-8000-000000000013
+                    expires_at: '2026-11-14T10:20:00Z'
+                    has_more: false
+                    next_cursor: null
+                    items:
+                    - position: 1
+                      delivery_id: 75000000-0000-4000-8000-000000000006
+                      delivery_expires_at: '2026-11-14T10:20:00Z'
+                      post:
+                        id: 75000000-0000-4000-8000-000000000002
+                        author_id: 75000000-0000-4000-8000-000000000001
+                        author:
+                          id: 75000000-0000-4000-8000-000000000001
+                          username: fixture
+                          display_name: fixture
+                          avatar_url: null
+                          avatar_storage_path: null
+                          avatar_updated_at: null
+                        text: a🚀éz
+                        formatting:
+                          version: 1
+                          spans:
+                          - start: 0
+                            end: 2
+                            style: bold
+                          - start: 1
+                            end: 4
+                            style: italic
+                        edited: false
+                        like_count: 0
+                        view_count: 0
+                        audience: public
+                        language: en
+                        version: 1
+                        created_at: '2026-11-14T10:00:00Z'
+                        updated_at: '2026-11-14T10:00:00Z'
+                        photos: []
+                        location: null
+                        is_repost: false
+                        comment_count: 1
+                        repost_count: 0
+                        my_repost: null
+                        reposted_by: []
+                        author_relationship:
+                          author_id: 75000000-0000-4000-8000-000000000001
+                          following: false
+                          version: 0
+                          is_friend: false
+                          can_follow: true
+                        action_version: 0
+                        liked: false
+                    radius_km: 50
               schema: {$ref: '#/components/schemas/NearbyPage'}
+        '410':
+          description: expired.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                expired:
+                  value: {"code": "PT410", "message": "nearby_session_expired", "details": null, "hint": null}
+        '412':
+          description: location required.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RPCErrorBody'}
+              examples:
+                location_required:
+                  value: {"code": "PT412", "message": "nearby_location_required", "details": null, "hint": null}
         default:
           $ref: '#/components/responses/RPCError'
   /rest/v1/rpc/create_feed_repost:
@@ -869,7 +1247,7 @@ paths:
       description: Empty text creates a plain reference without a new post or embedding; nonempty text creates a
         quote post with its own caption embedding and live original. One active plain repost per author/original.
         At most four reference edges. Posts, quotes and plain reposts share 12 creations/hour; deletion does not
-        restore allowance. Quotes have no own photos in this version.
+        restore allowance. Quotes can carry formatting. Plain reposts require empty formatting. Quotes have no own photos.
       requestBody:
         required: true
         content:
@@ -880,7 +1258,10 @@ paths:
               required:
               - requested_id
               - requested_original
+              dependentRequired:
+                requested_formatting: [requested_text, requested_audience, requested_language]
               properties:
+                requested_formatting: {$ref: '#/components/schemas/PostFormatting'}
                 requested_id:
                   type: string
                   format: uuid
@@ -1160,17 +1541,18 @@ components:
         errors preserve the last permitted cache; they do not by themselves mean logout.'
       content:
         application/json:
-          schema:
-            type: object
-            required: [code, message]
-            properties:
-              code: {type: string}
-              message: {type: string}
-              details:
-                type: [string, 'null']
-              hint:
-                type: [string, 'null']
+          schema: {$ref: '#/components/schemas/RPCErrorBody'}
   schemas:
+    RPCErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        details:
+          type: [string, 'null']
+        hint:
+          type: [string, 'null']
     TopicIDs:
       type: array
       uniqueItems: true
@@ -1309,13 +1691,43 @@ components:
         action_version: {type: integer, format: int64}
         liked: {type: boolean}
         less_similar: {type: boolean}
+    PostFormatting:
+      type: object
+      additionalProperties: false
+      required: [version, spans]
+      description: Offsets are zero-based Unicode code points in the exact submitted text, with an exclusive end.
+        The server stores text verbatim and sorts spans by start, end and style. Different styles can overlap.
+        Ranges of the same style cannot overlap. No span may extend beyond the text. Text stays plain in the index.
+      properties:
+        version: {type: integer, const: 1}
+        spans:
+          type: array
+          maxItems: 128
+          items:
+            type: object
+            additionalProperties: false
+            required: [start, end, style]
+            properties:
+              start: {type: integer, minimum: 0, maximum: 999}
+              end: {type: integer, minimum: 1, maximum: 1000}
+              style: {type: string, enum: [bold, italic, underline, strikethrough]}
+      example:
+        version: 1
+        spans:
+          - {start: 0, end: 2, style: bold}
+          - {start: 1, end: 4, style: italic}
     PostBase:
       type: object
-      required: [id, author_id, text, audience, language, version, created_at, updated_at, photos, location, is_repost, comment_count, repost_count, my_repost, reposted_by, author_relationship]
+      required: [id, author_id, author, text, formatting, edited, like_count, view_count, audience, language, version, created_at, updated_at, photos, location, is_repost, comment_count, repost_count, my_repost, reposted_by, author_relationship]
       properties:
         id: {type: string, format: uuid}
         author_id: {type: string, format: uuid}
         text: {type: string, maxLength: 1000}
+        formatting: {$ref: '#/components/schemas/PostFormatting'}
+        edited: {type: boolean}
+        like_count: {type: integer, minimum: 0}
+        view_count: {type: integer, minimum: 0}
+        author: {$ref: '#/components/schemas/CommentAuthor'}
         audience:
           type: string
           enum: [public, friends]
@@ -1463,10 +1875,16 @@ components:
           type:
           - string
           - 'null'
+        avatar_url: {type: [string, 'null']}
+        avatar_storage_path: {type: [string, 'null']}
+        avatar_updated_at: {type: [string, 'null'], format: date-time}
       required:
       - id
       - username
       - display_name
+      - avatar_url
+      - avatar_storage_path
+      - avatar_updated_at
     Comment:
       type: object
       properties:
@@ -1520,6 +1938,11 @@ components:
             - comment_id
             - user_id
             - username
+        reply_preview:
+          description: Root only. First currently accessible reply among the eight earliest, or null.
+          oneOf:
+          - {type: 'null'}
+          - $ref: '#/components/schemas/Comment'
         created_at:
           type: string
           format: date-time
