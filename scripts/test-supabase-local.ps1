@@ -1,16 +1,20 @@
 param(
     [Parameter(Mandatory = $true)][string]$AppRoot,
+    [switch]$Isolated,
     [switch]$Race,
     [switch]$WithModel,
     [switch]$WithLoad,
     [switch]$WithMedia,
     [switch]$WithSoak,
     [ValidateRange(1,120)][int]$SoakMinutes = 60,
+    [ValidateRange(0,150)][int]$TimeoutMinutes = 0,
     [string]$Run = '^TestSupabaseLocal(Pipeline|Media|MediaCapacity|MediaDBOutage|Social|SocialSecurity|SocialLoad|Follows|FollowsLoad|Nearby|Preparation|PreparationLoad|FeedWorkBound|FeedScroll|FollowAuthorWork|Feedback|FeedbackLoad|DatasetCapture|TopicsContract|TopicColdStart)$'
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
 $AppRoot = [IO.Path]::GetFullPath($AppRoot)
+. (Join-Path $PSScriptRoot 'local-supabase-target.ps1')
+$target = Get-LocalSupabaseTarget $serviceRoot $AppRoot $Isolated.IsPresent
 if ($WithSoak) {
     $drives = @($env:SystemDrive.TrimEnd(':'), [IO.Path]::GetPathRoot($serviceRoot).Substring(0,1)) | Select-Object -Unique
     foreach ($drive in $drives) {
@@ -22,16 +26,18 @@ if (!(Test-Path -LiteralPath $cli)) { throw 'Supabase CLI is missing in AppRoot.
 $names = @('YAP_SUPABASE_INTEGRATION', 'YAP_SUPABASE_APP_ROOT', 'YAP_SUPABASE_LOCAL_ADMIN_DSN', 'YAP_SUPABASE_LOCAL_URL',
     'YAP_SUPABASE_LOCAL_ANON_KEY', 'YAP_SUPABASE_LOCAL_SERVICE_KEY', 'GOMODCACHE', 'GOCACHE', 'YAP_SUPABASE_MODEL_TEST', 'YAP_SUPABASE_LOAD_TEST',
     'YAP_SUPABASE_MEDIA_TEST','YAP_SUPABASE_MEDIA_DSN','YAP_SUPABASE_MEDIA_TOKEN',
-    'YAP_SUPABASE_LOCAL_JWT_SECRET','YAP_SUPABASE_MEDIA_SOAK','YAP_SUPABASE_SOAK_MINUTES','YAP_SUPABASE_RECSYS_DSN')
+    'YAP_SUPABASE_LOCAL_JWT_SECRET','YAP_SUPABASE_MEDIA_SOAK','YAP_SUPABASE_SOAK_MINUTES','YAP_SUPABASE_RECSYS_DSN',
+    'YAP_SUPABASE_TEST_TARGET')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 Push-Location $AppRoot
 try {
-    $settings = & $cli status -o json 2>$null | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $settings.API_URL -ne 'http://127.0.0.1:54321') {
-        throw 'Tests require the running local YapChat Supabase on port 54321.'
+    $settings = & $cli --workdir $target.Workdir status -o json 2>$null | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $settings.API_URL -ne $target.Api -or !(Test-LocalSupabaseDatabase $settings.DB_URL $target)) {
+        throw 'Tests require the selected running local YapChat Supabase.'
     }
     $env:YAP_SUPABASE_INTEGRATION = '1'
+    $env:YAP_SUPABASE_TEST_TARGET = $target.Name
     $env:YAP_SUPABASE_APP_ROOT = $AppRoot
     $env:YAP_SUPABASE_MODEL_TEST = if ($WithModel) { '1' } else { '0' }
     $env:YAP_SUPABASE_LOAD_TEST = if ($WithLoad) { '1' } else { '0' }
@@ -40,8 +46,10 @@ try {
     $env:YAP_SUPABASE_SOAK_MINUTES = "$SoakMinutes"
     $env:YAP_SUPABASE_LOCAL_JWT_SECRET = $settings.JWT_SECRET
     if ($WithMedia -or $WithSoak) {
-        $media = Get-Content -LiteralPath (Join-Path $serviceRoot '.local/supabase-media-worker.json') -Raw | ConvertFrom-Json
-        if ($media.url -ne $settings.API_URL) { throw 'Media identity does not match local Supabase.' }
+        $media = Get-Content -LiteralPath (Join-Path $target.StateDir 'supabase-media-worker.json') -Raw | ConvertFrom-Json
+        if ($media.url -ne $settings.API_URL -or !(Test-LocalSupabaseDatabase $media.database_url $target)) {
+            throw 'Media identity does not match local Supabase.'
+        }
         $env:YAP_SUPABASE_MEDIA_DSN = $media.database_url
         $env:YAP_SUPABASE_MEDIA_TOKEN = $media.storage_token
     }
@@ -49,9 +57,8 @@ try {
         $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8091/healthz' -TimeoutSec 5
         if (!$health.embedding_model) { throw 'Start the local embedding service and wait until it is ready.' }
         if ($WithSoak) {
-            $recsys = Get-Content -Raw -LiteralPath (Join-Path $serviceRoot '.local/supabase-worker.json') | ConvertFrom-Json
-            $recsysDatabase = [Uri]$recsys.database_url
-            if ($recsysDatabase.Host -ne '127.0.0.1' -or $recsysDatabase.Port -ne 54322) { throw 'Local recommendation identity required.' }
+            $recsys = Get-Content -Raw -LiteralPath (Join-Path $target.StateDir 'supabase-worker.json') | ConvertFrom-Json
+            if (!(Test-LocalSupabaseDatabase $recsys.database_url $target)) { throw 'Local recommendation identity required.' }
             $env:YAP_SUPABASE_RECSYS_DSN = $recsys.database_url
         }
     }
@@ -64,6 +71,7 @@ try {
     Set-Location $serviceRoot
     $timeout = if ($WithLoad -and $WithMedia) { '10m' } elseif ($WithLoad) { '6m' } elseif ($WithMedia) { '5m' } else { '3m' }
     if ($WithSoak) { $timeout = "$($SoakMinutes+15)m"; $Run='^TestSupabaseLocalMediaSoak$' }
+    if ($TimeoutMinutes) { $timeout = "${TimeoutMinutes}m" }
     $arguments = @('test', './tests', '-run', $Run, '-count=1', '-v', "-timeout=$timeout")
     if ($Race) { $arguments += '-race' }
     & go @arguments

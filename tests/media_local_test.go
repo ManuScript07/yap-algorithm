@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -92,7 +94,7 @@ func TestSupabaseLocalMedia(t *testing.T) {
 	}
 	dsn := os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN")
 	u, err := url.Parse(dsn)
-	if err != nil || u.Hostname() != "127.0.0.1" || u.Port() != "54322" || os.Getenv("YAP_SUPABASE_LOCAL_URL") != "http://127.0.0.1:54321" {
+	if err != nil || !localSupabaseTarget(t).acceptsURL(u) || os.Getenv("YAP_SUPABASE_LOCAL_URL") != localSupabaseTarget(t).apiURL {
 		t.Fatal("media tests only accept explicit local YapChat Supabase")
 	}
 	ctx := context.Background()
@@ -248,6 +250,111 @@ func TestSupabaseLocalMedia(t *testing.T) {
 		admin.QueryRow(ctx, "select count(*)from recsys.index_jobs where post_id=$1", publicPost).Scan(&indexed)
 		if indexed != 0 {
 			t.Fatal("photo-only post created a fake text embedding job")
+		}
+	})
+	t.Run("real_auth_media_and_e5_through_current_feed_contract", func(t *testing.T) {
+		if os.Getenv("YAP_SUPABASE_MODEL_TEST") != "1" {
+			t.Skip("real E5 required")
+		}
+		postID := domain.UUID()
+		photoID := upload(postID, jpegData, "image/jpeg")
+		drain()
+		out, status := c.rpc(ownerToken, "publish_feed_post", map[string]any{
+			"requested_id": postID, "requested_text": "Architecture and walks near the city center",
+			"requested_language": "en", "requested_photos": []string{photoID},
+			"requested_location": map[string]float64{"latitude": 55.75, "longitude": 37.61},
+		})
+		if status != 200 || out["id"] != postID {
+			t.Fatalf("text and photo publication: %d", status)
+		}
+		stop := startPreparationWorkerProcess(t, localRecommendationDSN(t), "http://127.0.0.1:8091", filepath.Join(t.TempDir(), "media-e5.log"))
+		defer stop()
+		t.Cleanup(func() { c.rpc(ownerToken, "delete_feed_post", map[string]string{"requested_id": postID}) })
+		out, status = c.rpc(viewerToken, "set_feed_author_followed", map[string]any{
+			"requested_id": domain.UUID(), "requested_author": owner, "requested_following": true, "expected_version": 0,
+		})
+		if status != 200 || out["following"] != true {
+			t.Fatalf("set feed follow: %d", status)
+		}
+		t.Cleanup(func() {
+			c.rpc(viewerToken, "set_feed_author_followed", map[string]any{
+				"requested_id": domain.UUID(), "requested_author": owner, "requested_following": false, "expected_version": 1,
+			})
+		})
+		sbExec(t, admin, `insert into public.user_locations(user_id,latitude,longitude,updated_at)
+			values($1,55.75,37.61,statement_timestamp())`, viewer)
+		t.Cleanup(func() { sbExec(t, admin, "delete from public.user_locations where user_id=$1", viewer) })
+		type deliveredPage struct{ Items []scrollItem }
+		get := func(name string, args any) deliveredPage {
+			t.Helper()
+			out, status := c.rpc(viewerToken, name, args)
+			var page deliveredPage
+			body, err := json.Marshal(out)
+			if status != 200 || err != nil || json.Unmarshal(body, &page) != nil {
+				t.Fatalf("%s status=%d invalid page", name, status)
+			}
+			return page
+		}
+		findReceipt := func(name string, page deliveredPage) string {
+			t.Helper()
+			for _, item := range page.Items {
+				if item.Post.ID == postID && item.Receipt != "" {
+					return item.Receipt
+				}
+			}
+			t.Fatalf("%s did not return the published post", name)
+			return ""
+		}
+		friends := findReceipt("friends", get("get_friends_feed", map[string]int{"requested_limit": 20}))
+		nearby := findReceipt("nearby", get("get_nearby_feed", map[string]int{"requested_limit": 20}))
+		if _, status := c.rpc(viewerToken, "apply_feed_action", map[string]any{
+			"requested_id": domain.UUID(), "requested_delivery": friends, "requested_action": "like", "expected_version": 0,
+		}); status != 200 {
+			t.Fatalf("friend feed reaction: %d", status)
+		}
+		time.Sleep(time.Second)
+		out, status = c.rpc(viewerToken, "record_feed_events", map[string]any{"requested_events": []map[string]any{{
+			"event_id": domain.UUID(), "delivery_id": nearby, "kind": "impression", "visible_ms": 1000, "visible_fraction": 1,
+		}}})
+		if status != 200 || out["accepted"] != float64(1) {
+			t.Fatalf("nearby feed telemetry: %d", status)
+		}
+		commentID := domain.UUID()
+		if _, status := c.rpc(viewerToken, "create_feed_comment", map[string]any{
+			"requested_id": commentID, "requested_post": postID, "requested_text": "How long is the walk?",
+		}); status != 200 {
+			t.Fatalf("comment creation: %d", status)
+		}
+		replyID := domain.UUID()
+		if _, status := c.rpc(ownerToken, "create_feed_comment", map[string]any{
+			"requested_id": replyID, "requested_post": postID, "requested_text": "About thirty minutes", "requested_reply_to": commentID,
+		}); status != 200 {
+			t.Fatalf("reply creation: %d", status)
+		}
+		out, status = c.rpc(viewerToken, "get_feed_comment_replies", map[string]any{
+			"requested_post": postID, "requested_root": commentID, "requested_limit": 1,
+		})
+		replies, err := json.Marshal(out)
+		if status != 200 || err != nil || !bytes.Contains(replies, []byte(replyID)) {
+			t.Fatalf("reply page: %d", status)
+		}
+		first := get("get_for_you_feed_v2", scrollArgs(domain.UUID(), "", 20))
+		findReceipt("first For You session", first)
+		// User activity and index completion can enqueue a follow-up refresh.
+		awaitLocalCondition(t, admin, "prepared post and interest", 30*time.Second, `select exists (
+			select 1 from recsys.user_states u join recsys.feed_snapshot_items i on i.snapshot_id=u.current_snapshot
+			join recsys.post_embeddings e on e.post_id=i.post_id and e.post_version=i.post_version and e.model=$3
+			where u.user_id=$2 and i.post_id=$1 and u.revision=u.processed_revision
+			and exists(select 1 from recsys.interest_clusters c where c.user_id=u.user_id)
+			and exists(select 1 from recsys.feedback_facts f where f.delivery_id=$4 and f.surface='friends')
+			and exists(select 1 from recsys.feedback_facts f where f.delivery_id=$5 and f.surface='nearby'))`, postID, viewer, sbModel, friends, nearby)
+		out, status = c.rpc(viewerToken, "get_for_you_feed_v2", scrollArgs(domain.UUID(), "", 20))
+		data, _ := json.Marshal(out)
+		var prepared scrollPage
+		if status != 200 || json.Unmarshal(data, &prepared) != nil || !slices.ContainsFunc(prepared.Items, func(item scrollItem) bool {
+			return item.Post.ID == postID && item.Model == "personalized-v2"
+		}) {
+			t.Fatalf("new session did not receive the prepared post: %d", status)
 		}
 	})
 	t.Run("originals_signing_listing_upsert_and_foreign_paths_are_closed", func(t *testing.T) {

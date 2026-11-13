@@ -28,7 +28,7 @@ func stage5Pool(t *testing.T) *pgxpool.Pool {
 		t.Skip("local integration required")
 	}
 	cfg, err := pgxpool.ParseConfig(os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN"))
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" || cfg.ConnConfig.Port != 54322 || os.Getenv("YAP_SUPABASE_LOCAL_URL") != "http://127.0.0.1:54321" {
+	if err != nil || !localSupabaseTarget(t).acceptsPool(cfg) || os.Getenv("YAP_SUPABASE_LOCAL_URL") != localSupabaseTarget(t).apiURL {
 		t.Fatal("explicit local Supabase required")
 	}
 	cfg.MaxConns = 16
@@ -39,9 +39,9 @@ func stage5Pool(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(p.Close)
 	return p
 }
-func stage5Worker(t *testing.T) (*postgres.IndexRepository, *postgres.RecommendationRepository) {
+func localRecommendationDSN(t *testing.T) string {
 	t.Helper()
-	raw, err := os.ReadFile("../.local/supabase-worker.json")
+	raw, err := os.ReadFile(localSupabaseTarget(t).workerConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,10 +52,15 @@ func stage5Worker(t *testing.T) (*postgres.IndexRepository, *postgres.Recommenda
 		t.Fatal("worker config")
 	}
 	parsed, err := url.Parse(config.DSN)
-	if err != nil || parsed.Hostname() != "127.0.0.1" || parsed.Port() != "54322" {
+	if err != nil || !localSupabaseTarget(t).acceptsURL(parsed) {
 		t.Fatal("local worker identity required")
 	}
-	repo, err := postgres.OpenIndexRepository(context.Background(), config.DSN, sbModel, 4)
+	return config.DSN
+}
+
+func stage5Worker(t *testing.T) (*postgres.IndexRepository, *postgres.RecommendationRepository) {
+	t.Helper()
+	repo, err := postgres.OpenIndexRepository(context.Background(), localRecommendationDSN(t), sbModel, 4)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,10 +15,14 @@ import (
 )
 
 type scrollItem struct {
-	Position int                 `json:"position"`
-	Receipt  string              `json:"delivery_id"`
-	Model    string              `json:"model"`
-	Post     struct{ ID string } `json:"post"`
+	Position int    `json:"position"`
+	Receipt  string `json:"delivery_id"`
+	Model    string `json:"model"`
+	Post     struct {
+		ID            string `json:"id"`
+		ActionVersion int64  `json:"action_version"`
+		Liked         bool   `json:"liked"`
+	} `json:"post"`
 }
 
 type scrollPage struct {

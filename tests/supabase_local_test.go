@@ -120,8 +120,8 @@ func TestSupabaseLocalPipeline(t *testing.T) {
 	}
 	dsn := os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN")
 	u, err := url.Parse(dsn)
-	if err != nil || u.Hostname() != "127.0.0.1" || u.Port() != "54322" || u.Path != "/postgres" {
-		t.Fatal("tests require the explicit local Supabase database on 127.0.0.1:54322/postgres")
+	if err != nil || !localSupabaseTarget(t).acceptsURL(u) {
+		t.Fatal("tests require the selected local Supabase database")
 	}
 	ctx := context.Background()
 	admin, err := pgxpool.New(ctx, dsn)
@@ -511,7 +511,7 @@ func sbREST(t *testing.T, admin *pgxpool.Pool, workerDSN string) {
 	base := os.Getenv("YAP_SUPABASE_LOCAL_URL")
 	anon := os.Getenv("YAP_SUPABASE_LOCAL_ANON_KEY")
 	service := os.Getenv("YAP_SUPABASE_LOCAL_SERVICE_KEY")
-	if base != "http://127.0.0.1:54321" || anon == "" || service == "" {
+	if base != localSupabaseTarget(t).apiURL || anon == "" || service == "" {
 		t.Fatal("local Auth/API test configuration missing")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}

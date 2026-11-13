@@ -24,7 +24,7 @@ func TestSupabaseLocalSocial(t *testing.T) {
 		t.Skip("enable local Supabase integration")
 	}
 	cfg, err := pgxpool.ParseConfig(os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN"))
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" || cfg.ConnConfig.Port != 54322 || os.Getenv("YAP_SUPABASE_LOCAL_URL") != "http://127.0.0.1:54321" {
+	if err != nil || !localSupabaseTarget(t).acceptsPool(cfg) || os.Getenv("YAP_SUPABASE_LOCAL_URL") != localSupabaseTarget(t).apiURL {
 		t.Fatal("explicit local Supabase required")
 	}
 	cfg.MaxConns = 16
@@ -278,7 +278,7 @@ func TestSupabaseLocalSocial(t *testing.T) {
 		sbExec(t, p, `insert into recsys.post_embeddings(post_id,post_version,model,embedding)values($1,1,$2,$3::text::extensions.vector)`, target, sbModel, "[1,"+strings.Repeat("0,", 382)+"0]")
 		// The integration role is created by the existing pipeline fixture.
 		// A fresh restricted login comes from the configured service identity.
-		config, err := os.ReadFile("../.local/supabase-worker.json")
+		config, err := os.ReadFile(localSupabaseTarget(t).workerConfig())
 		if err != nil {
 			t.Fatal("run restricted worker setup")
 		}
@@ -289,7 +289,7 @@ func TestSupabaseLocalSocial(t *testing.T) {
 			t.Fatal("invalid local worker config")
 		}
 		workerURL, err := url.Parse(identity.DSN)
-		if err != nil || workerURL.Hostname() != "127.0.0.1" || workerURL.Port() != "54322" {
+		if err != nil || !localSupabaseTarget(t).acceptsURL(workerURL) {
 			t.Fatal("explicit local worker required")
 		}
 		repo, err := postgres.OpenIndexRepository(ctx, identity.DSN, sbModel, 3)

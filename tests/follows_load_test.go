@@ -21,7 +21,7 @@ func TestSupabaseLocalFollowsLoad(t *testing.T) {
 		t.Skip("local integration with -WithLoad required")
 	}
 	cfg, err := pgxpool.ParseConfig(os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN"))
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" || cfg.ConnConfig.Port != 54322 || os.Getenv("YAP_SUPABASE_LOCAL_URL") != "http://127.0.0.1:54321" {
+	if err != nil || !localSupabaseTarget(t).acceptsPool(cfg) || os.Getenv("YAP_SUPABASE_LOCAL_URL") != localSupabaseTarget(t).apiURL {
 		t.Fatal("explicit local database required")
 	}
 	cfg.MaxConns = 16

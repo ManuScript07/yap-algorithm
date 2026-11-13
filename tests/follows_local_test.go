@@ -25,7 +25,7 @@ func TestSupabaseLocalFollows(t *testing.T) {
 		t.Skip("local integration required")
 	}
 	cfg, err := pgxpool.ParseConfig(os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN"))
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" || cfg.ConnConfig.Port != 54322 || os.Getenv("YAP_SUPABASE_LOCAL_URL") != "http://127.0.0.1:54321" {
+	if err != nil || !localSupabaseTarget(t).acceptsPool(cfg) || os.Getenv("YAP_SUPABASE_LOCAL_URL") != localSupabaseTarget(t).apiURL {
 		t.Fatal("explicit local Supabase required")
 	}
 	cfg.MaxConns = 16
@@ -375,7 +375,7 @@ func TestSupabaseLocalFollows(t *testing.T) {
 		}
 		sbExec(t, p, "insert into recsys.post_embeddings(post_id,post_version,model,embedding)values($1,1,$2,$3::text::extensions.vector)", related, sbModel, "[1,"+strings.Repeat("0,", 382)+"0]")
 		set(t, f.viewer, f.author, true, 0)
-		raw, err := os.ReadFile("../.local/supabase-worker.json")
+		raw, err := os.ReadFile(localSupabaseTarget(t).workerConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -386,7 +386,7 @@ func TestSupabaseLocalFollows(t *testing.T) {
 			t.Fatal("worker config")
 		}
 		endpoint, err := url.Parse(config.DSN)
-		if err != nil || endpoint.Hostname() != "127.0.0.1" || endpoint.Port() != "54322" {
+		if err != nil || !localSupabaseTarget(t).acceptsURL(endpoint) {
 			t.Fatal("local worker required")
 		}
 		repo, err := postgres.OpenIndexRepository(ctx, config.DSN, sbModel, 3)

@@ -1,12 +1,12 @@
 package tests
 
 import (
-	"encoding/json"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -14,20 +14,14 @@ import (
 // process and terminate it before fixture cleanup, including assertion failures.
 func startPreparationWorker(t *testing.T, modelURL, logPath string) {
 	t.Helper()
+	startPreparationWorkerProcess(t, localRecommendationDSN(t), modelURL, logPath)
+}
+
+func startPreparationWorkerProcess(t *testing.T, dsn, modelURL, logPath string) func() {
+	t.Helper()
 	endpoint, err := url.Parse(modelURL)
 	if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" {
 		t.Fatal("local model required")
-	}
-	stage5Worker(t)
-	raw, err := os.ReadFile("../.local/supabase-worker.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var config struct {
-		DSN string `json:"database_url"`
-	}
-	if json.Unmarshal(raw, &config) != nil {
-		t.Fatal("private worker config")
 	}
 	binary := filepath.Join(t.TempDir(), "preparation-worker.exe")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/worker")
@@ -47,7 +41,7 @@ func startPreparationWorker(t *testing.T, modelURL, logPath string) {
 		}
 		worker.Env = append(worker.Env, entry)
 	}
-	worker.Env = append(worker.Env, "DATABASE_URL="+config.DSN, "MODEL_URL="+modelURL)
+	worker.Env = append(worker.Env, "DATABASE_URL="+dsn, "MODEL_URL="+modelURL)
 	worker.Stdout, worker.Stderr = logFile, logFile
 	if err := worker.Start(); err != nil {
 		logFile.Close()
@@ -55,5 +49,7 @@ func startPreparationWorker(t *testing.T, modelURL, logPath string) {
 	}
 	stopped := make(chan error, 1)
 	go func() { stopped <- worker.Wait() }()
-	t.Cleanup(func() { _ = worker.Process.Kill(); <-stopped; _ = logFile.Close() })
+	stop := sync.OnceFunc(func() { _ = worker.Process.Kill(); <-stopped; _ = logFile.Close() })
+	t.Cleanup(stop)
+	return stop
 }

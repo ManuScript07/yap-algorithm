@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidateSet('setup', 'worker')][string]$Action,
     [string]$AppRoot,
+    [switch]$Isolated,
     [ValidateRange(1, 8)][int]$Concurrency = 2,
     [ValidateRange(1, 8)][int]$BatchSize = 4,
     [switch]$Once,
@@ -11,7 +12,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $serviceRoot = Split-Path $PSScriptRoot -Parent
-$configPath = Join-Path $serviceRoot '.local/supabase-worker.json'
+if ($AppRoot) { $AppRoot = [IO.Path]::GetFullPath($AppRoot) }
+. (Join-Path $PSScriptRoot 'local-supabase-target.ps1')
+$target = Get-LocalSupabaseTarget $serviceRoot $AppRoot $Isolated.IsPresent
+$configPath = Join-Path $target.StateDir 'supabase-worker.json'
 if ($RetryFailed -and $EnqueueBackfill) { throw 'Choose one maintenance action.' }
 if ($BackfillAfter -and (!$EnqueueBackfill -or ![guid]::TryParse($BackfillAfter, [ref]([guid]::Empty)))) {
     throw 'BackfillAfter requires EnqueueBackfill and a UUID cursor.'
@@ -22,11 +26,10 @@ if ($Action -eq 'setup') {
     $cli = Join-Path $AppRoot 'node_modules/.bin/supabase.cmd'
     Push-Location $AppRoot
     try {
-        $settings = & $cli status -o json 2>$null | ConvertFrom-Json
+        $settings = & $cli --workdir $target.Workdir status -o json 2>$null | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0) { throw 'Local Supabase is not running.' }
-        $database = [Uri]$settings.DB_URL
-        if ($database.Host -ne '127.0.0.1' -or $database.Port -ne 54322 -or $database.AbsolutePath -ne '/postgres') {
-            throw 'Setup only accepts the local YapChat database on port 54322.'
+        if ($settings.API_URL -ne $target.Api -or !(Test-LocalSupabaseDatabase $settings.DB_URL $target)) {
+            throw 'Setup only accepts the selected local YapChat database.'
         }
         $random = [byte[]]::new(32)
         $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -48,10 +51,10 @@ alter role yap_recsys_local_worker password '$password';
 grant yap_recommendation_worker to yap_recsys_local_worker;
 commit;
 "@
-        $sql | & docker exec -i supabase_db_Yap_chat psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q
+        $sql | & docker exec -i $target.Container psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q
         if ($LASTEXITCODE -ne 0) { throw 'Cannot provision the restricted local worker login.' }
         New-Item -ItemType Directory -Force -Path (Split-Path $configPath -Parent) | Out-Null
-        @{ database_url = "postgres://yap_recsys_local_worker:${password}@127.0.0.1:54322/postgres?sslmode=disable";
+        @{ database_url = "postgres://yap_recsys_local_worker:${password}@127.0.0.1:$($target.DatabasePort)/postgres?sslmode=disable";
            model_url = 'http://127.0.0.1:8091' } | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding utf8
         Write-Host 'Restricted local worker login configured. Credentials saved under .local/.'
     } finally { Pop-Location }
@@ -60,8 +63,7 @@ commit;
 
 if (!(Test-Path -LiteralPath $configPath)) { throw 'Run setup first.' }
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-$database = [Uri]$config.database_url
-if ($database.Host -ne '127.0.0.1' -or $database.Port -ne 54322 -or $database.AbsolutePath -ne '/postgres') {
+if (!(Test-LocalSupabaseDatabase $config.database_url $target)) {
     throw 'This helper only starts a worker against local YapChat Supabase.'
 }
 $names = @('DATABASE_URL', 'MODEL_URL', 'GOMODCACHE', 'GOCACHE')

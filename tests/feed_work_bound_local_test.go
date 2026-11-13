@@ -19,7 +19,7 @@ func runFeedWorkSQL(t *testing.T, sql string) {
 		t.Fatal("local Docker socket required")
 	}
 
-	command := exec.CommandContext(ctx, "docker", "exec", "-i", "supabase_db_Yap_chat", "psql", "-U", "supabase_admin", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-q")
+	command := exec.CommandContext(ctx, "docker", "exec", "-i", localSupabaseTarget(t).container, "psql", "-U", "supabase_admin", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-q")
 	command.Stdin = strings.NewReader(sql)
 	output, err := command.CombinedOutput()
 	if err != nil {

@@ -19,7 +19,7 @@ func TestSupabaseLocalSocialLoad(t *testing.T) {
 		t.Skip("enable local integration -WithLoad")
 	}
 	cfg, err := pgxpool.ParseConfig(os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN"))
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" || cfg.ConnConfig.Port != 54322 {
+	if err != nil || !localSupabaseTarget(t).acceptsPool(cfg) {
 		t.Fatal("explicit local database required")
 	}
 	cfg.MaxConns = 16

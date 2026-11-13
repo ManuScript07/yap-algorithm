@@ -466,3 +466,32 @@ python ml/benchmark_ranking.py --corpus $corpus --photos $photos --replay $repla
 Перед первым запуском на новом хосте задайте `HF_HOME` и выполните `python ml/model_artifacts.py prefetch-e5`. Эта команда загружает файлы закреплённой ревизии и сверяет SHA-256. `verify-e5` делает ту же проверку из локального кеша. Текстовый сервис при старте читает только проверенные файлы из кеша и сообщает идентификатор артефакта через `/healthz`. Обновление библиотеки или конфигурации меняет идентификатор артефакта. Рабочее пространство векторов остаётся привязано к закреплённым весам и правилам обработки.
 
 Чтобы проверить экспериментальный CatBoost вручную, пересоберите его через `ml/benchmark_ranking.py` и запустите отдельный экземпляр `ml/service.py --port 8092 --ranker <путь-к-cbm> --allow-research-ranker`. Он принимает запросы с loopback и требует проверенный manifest, хеш файла весов и совместимый порядок признаков. В рабочей ленте используется Go-гибрид. При повреждении кеша E5 сначала восстановите закреплённые файлы, проверьте их командой `verify-e5` и перезапустите текстовый сервис. Существующие задания повторятся через очередь, а Supabase продолжит читать готовые страницы или отдавать запасную подборку.
+
+## Серверная приёмка на отдельной Supabase
+
+Из корня этого репозитория укажите `$appRoot` — путь к локальному YapChat с установленной Supabase CLI. Стенд использует API `55321`, PostgreSQL `55322` и копию канонических миграций в `.local/stage7-supabase/`. Репетиция обновления пересоздаёт базу этого стенда и проверяет сохранённую сессию прежнего RPC после применения новой миграции.
+
+```powershell
+./scripts/stage7-supabase-local.ps1 -AppRoot $appRoot
+./scripts/stage7-migrations-local.ps1 -AppRoot $appRoot
+./scripts/supabase-local.ps1 -Action setup -AppRoot $appRoot -Isolated
+./scripts/media-local.ps1 -Action setup -AppRoot $appRoot -Isolated
+```
+
+Запустите E5 на `127.0.0.1:8091` из проверенного кеша. Следующие команды используют выданные стенду ограниченные логины и проверяют контракты через Supabase.
+
+```powershell
+./scripts/test-supabase-local.ps1 -AppRoot $appRoot -Isolated -Race -WithModel -WithMedia `
+  -TimeoutMinutes 9 -Run '^TestSupabaseLocal(Pipeline|Media|FeedScroll|Feedback|RecommendationRecovery)$'
+./scripts/benchmark-feed-local.ps1 -AppRoot $appRoot -Isolated -Mode inference `
+  -RequestsPerMinute 500 -Seconds 60 -PageSize 30 -WithTopics -WithScroll -WithMixed
+./scripts/stage7-capacity-local.ps1 -AppRoot $appRoot -Profile history -HistoryPosts 10000
+./scripts/stage7-capacity-local.ps1 -AppRoot $appRoot -Profile write
+./scripts/test-supabase-local.ps1 -AppRoot $appRoot -Isolated -WithModel -WithSoak -SoakMinutes 60
+```
+
+Смешанный профиль распределяет запросы между тремя лентами, чатами, комментариями и реакциями. Для основного профиля на 500 читателей задайте `-Readers 500` вместе с `-RequestsPerMinute 1500` или `-RequestsPerMinute 3000`. Профиль `history` поддерживает 10 000, 100 000 и 300 000 синтетических публикаций. Профиль `write` отправляет 10 000 публикаций через RPC за десять минут и сверяет записи, задания и эмбеддинги E5. Часовой профиль проверяет медиа, чтение и восстановление при сбоях. Артефакты и тестовые учётные данные остаются в `.local/`.
+
+`./scripts/stage7-tls-local.ps1` проверяет подключение воркера с локальным сертификатом и отказ при несовпадении имени хоста. Запускайте его на свободном стенде после проверки остальных профилей.
+
+Остановите отдельный стенд командой `./scripts/stage7-supabase-local.ps1 -AppRoot $appRoot -Action stop`.

@@ -32,6 +32,7 @@ type mediaDatabaseProxy struct {
 
 func newMediaDatabaseProxy(t *testing.T) *mediaDatabaseProxy {
 	t.Helper()
+	upstream := localSupabaseTarget(t).databaseAddress()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +56,7 @@ func newMediaDatabaseProxy(t *testing.T) *mediaDatabaseProxy {
 				if down {
 					return
 				}
-				server, err := net.DialTimeout("tcp", "127.0.0.1:54322", time.Second)
+				server, err := net.DialTimeout("tcp", upstream, time.Second)
 				if err != nil {
 					return
 				}

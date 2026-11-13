@@ -76,6 +76,12 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	}
 	rate, seconds := readInt("YAP_FEED_PERF_RATE", 500, 3000), readInt("YAP_FEED_PERF_SECONDS", 10, 180)
 	pageSize := readInt("YAP_FEED_PERF_PAGE_SIZE", 1, 30)
+	readerCount := 60
+	if value := os.Getenv("YAP_FEED_PERF_READERS"); value == "500" {
+		readerCount = 500
+	} else if value != "" && value != "60" {
+		t.Fatal("the benchmark supports 60 or 500 readers")
+	}
 	p := stage5Pool(t)
 	ctx := context.Background()
 	var existingWorkers int
@@ -83,7 +89,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		t.Fatal("stop other local recommendation workers before comparative benchmarks")
 	}
 	rows, err := p.Query(ctx, `insert into auth.users(id,is_sso_user,is_anonymous,raw_user_meta_data)
- select extensions.gen_random_uuid(),false,false,'{"name":"Feed performance fixture"}' from generate_series(1,156) returning id::text`)
+ select extensions.gen_random_uuid(),false,false,'{"name":"Feed performance fixture"}' from generate_series(1,$1::int) returning id::text`, readerCount+96)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +109,14 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		sbExec(t, p, "delete from public.profiles where id=any($1::uuid[])", users)
 		sbExec(t, p, "delete from auth.users where id=any($1::uuid[])", users)
 	})
-	readers, authors := users[:60], users[60:]
+	readers, authors := users[:readerCount], users[readerCount:]
 	withExport := os.Getenv("YAP_FEED_PERF_EXPORT") == "1"
 	withTopics := os.Getenv("YAP_FEED_PERF_TOPICS") == "1"
 	withScroll := os.Getenv("YAP_FEED_PERF_SCROLL") == "1"
+	withMixed := os.Getenv("YAP_FEED_PERF_MIXED") == "1"
+	if withMixed && !withScroll {
+		t.Fatal("mixed acceptance requires the current scroll RPC")
+	}
 	var exportConn *pgx.Conn
 	var exportCohort, exportDir string
 	if withExport {
@@ -138,6 +148,15 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	for i, user := range readers {
 		tokens[i] = localMediaJWT(t, user)
 		before := time.Now()
+		if withScroll {
+			body, status, err := client.rpc(tokens[i], "get_for_you_feed_v2", scrollArgs(domain.UUID(), "", pageSize))
+			fallbackMS = append(fallbackMS, float64(time.Since(before))/float64(time.Millisecond))
+			var page scrollPage
+			if err != nil || status != 200 || json.Unmarshal(body, &page) != nil || len(page.Items) != pageSize || page.Items[0].Model != "archive-v2" {
+				t.Fatalf("cold archive status=%d error=%v", status, err)
+			}
+			continue
+		}
 		body, status, err := client.rpc(tokens[i], "get_for_you_feed", map[string]int{"requested_limit": pageSize})
 		fallbackMS = append(fallbackMS, float64(time.Since(before))/float64(time.Millisecond))
 		var page sbRecommendationPage
@@ -156,24 +175,40 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	}
 	sbExec(t, p, "update recsys.refresh_jobs set available_at=statement_timestamp()where user_id=any($1::uuid[])", readers)
 	warmStarted := time.Now()
-	for i := 0; i < 120; i++ {
-		worked, err := (application.Personalizer{Repository: rec}).Once(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !worked {
-			break
-		}
+	warmThreads := 1
+	if readerCount == 500 {
+		warmThreads = 4
+	}
+	warmErrors := make(chan error, warmThreads)
+	var warmWorkers sync.WaitGroup
+	for i := 0; i < warmThreads; i++ {
+		warmWorkers.Go(func() {
+			for j := 0; j < 2*readerCount; j++ {
+				worked, err := (application.Personalizer{Repository: rec}).Once(ctx)
+				if err != nil {
+					warmErrors <- err
+					return
+				}
+				if !worked {
+					return
+				}
+			}
+		})
+	}
+	warmWorkers.Wait()
+	close(warmErrors)
+	for err := range warmErrors {
+		t.Fatal(err)
 	}
 	var prepared int
-	if err := p.QueryRow(ctx, "select count(*)from recsys.user_states where user_id=any($1::uuid[])and prepared_at is not null and profile_complete", readers).Scan(&prepared); err != nil || prepared != 60 {
+	if err := p.QueryRow(ctx, "select count(*)from recsys.user_states where user_id=any($1::uuid[])and prepared_at is not null and profile_complete", readers).Scan(&prepared); err != nil || prepared != readerCount {
 		t.Fatalf("warm fixtures prepared=%d err=%v", prepared, err)
 	}
 	t.Logf("warm preparation readers=%d topics=%t elapsed=%s", prepared, withTopics, time.Since(warmStarted))
 	if withTopics {
 		var topicSnapshots int
-		if err := p.QueryRow(ctx, "select count(*) from recsys.user_states u join recsys.feed_snapshots s on s.id=u.current_snapshot where u.user_id=any($1::uuid[]) and s.policy_version='hybrid-v2-topics-v1'", readers).Scan(&topicSnapshots); err != nil || topicSnapshots != 60 {
-			t.Fatalf("topics actually used for %d/60 snapshots: %v", topicSnapshots, err)
+		if err := p.QueryRow(ctx, "select count(*) from recsys.user_states u join recsys.feed_snapshots s on s.id=u.current_snapshot where u.user_id=any($1::uuid[]) and s.policy_version='hybrid-v2-topics-v1'", readers).Scan(&topicSnapshots); err != nil || topicSnapshots != readerCount {
+			t.Fatalf("topics actually used for %d/%d snapshots: %v", topicSnapshots, readerCount, err)
 		}
 	}
 	// Same backlog in all modes, older than the foreground corpus. Technical
@@ -182,6 +217,9 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
  select extensions.gen_random_uuid(),($1::uuid[])[1+(n-1)%96],'Unique background reading, travel and software sample '||n||' run '||$2::text,'public','en','[]',statement_timestamp()-interval '2 hours',55,37 from generate_series(1,2000)n`, authors, domain.UUID())
 	sbExec(t, p, "update recsys.index_jobs set job_kind='backfill'where done_at is null and post_id in(select id from feed.posts where author_id=any($1::uuid[]))", authors)
 	output := fmt.Sprintf("feed-perf-%s-%s-%d-%ds", label, mode, rate, seconds)
+	if readerCount != 60 {
+		output += fmt.Sprintf("-r%d", readerCount)
+	}
 	if pageSize != 10 {
 		output += fmt.Sprintf("-p%d", pageSize)
 	}
@@ -192,7 +230,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	scrolls := make([]scrollSlot, len(readers))
 	if withScroll {
 		for i := range readers {
-			if i%4 != 0 {
+			if i%4 != 0 || i >= 60 {
 				continue
 			}
 			slot := &scrolls[i]
@@ -217,6 +255,10 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 				t.Fatal("scroll benchmark did not prepare a deep cursor")
 			}
 		}
+	}
+	var mixed *mixedFeedProbes
+	if withMixed {
+		mixed = newMixedFeedProbes(t, p, client, readers, tokens, authors[0])
 	}
 	if mode != "off" {
 		modelURL := "http://127.0.0.1:8091"
@@ -245,6 +287,10 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	if withScroll {
 		names[0] = "get_for_you_feed_v2"
 	}
+	measuredRPCs := append([]string(nil), names...)
+	if withMixed {
+		measuredRPCs = append(measuredRPCs, mixedFeedRPCs...)
+	}
 	type slot struct {
 		sync.Mutex
 		sequence  int
@@ -266,8 +312,18 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		go func() {
 			defer group.Done()
 			for work := range jobs {
+				if mixed != nil && work.index%5 == 0 {
+					sample, problem := mixed.request(work.index, work.due)
+					mu.Lock()
+					samples = append(samples, sample)
+					if problem != "" {
+						failures = append(failures, problem)
+					}
+					mu.Unlock()
+					continue
+				}
 				reader := work.index % len(readers)
-				surface := (work.index/len(readers) + work.index) % 3
+				surface := (work.index/len(readers) + reader) % 3
 				s := &slots[reader*3+surface]
 				s.Lock()
 				kind := []string{"first", "next", "replay"}[s.sequence%3]
@@ -283,7 +339,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 				if isScroll {
 					scroll := &scrolls[reader]
 					switch {
-					case reader%4 == 0:
+					case scroll.deep.Next != "":
 						kind = "deep"
 						args = scrollArgs(scroll.deep.Session, scroll.deep.Next, pageSize)
 					case kind == "first":
@@ -438,7 +494,7 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 	aggregates := map[string]feedPerfSummary{}
 	endToEnd := map[string]feedPerfSummary{}
 	latencyBudgetMet := true
-	for _, name := range names {
+	for _, name := range measuredRPCs {
 		var httpTimes []float64
 		var totalTimes []float64
 		for _, sample := range samples {
@@ -480,12 +536,30 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		outcomes[sample.RPC][outcome]++
 	}
 	var done int
-	if err := p.QueryRow(ctx, "select count(*)from recsys.index_jobs where job_kind='backfill'and done_at is not null and post_id in(select id from feed.posts where author_id=any($1::uuid[]))", authors).Scan(&done); err != nil {
-		t.Fatal(err)
+	countDoneBackfill := func() {
+		t.Helper()
+		if err := p.QueryRow(ctx, "select count(*)from recsys.index_jobs where job_kind='backfill'and done_at is not null and post_id in(select id from feed.posts where author_id=any($1::uuid[]))", authors).Scan(&done); err != nil {
+			t.Fatal(err)
+		}
 	}
-	report := map[string]any{"mode": mode, "label": label, "cold_fallback_http_ms": summarizeFeedTiming(fallbackMS), "target_per_minute": rate, "duration_seconds": seconds, "page_size": pageSize, "elapsed_seconds": elapsed.Seconds(), "arrivals": count, "completed": len(samples), "admission_dropped": dropped, "admission_ms": summarizeFeedTiming(admission), "http_ms": aggregates, "scheduled_end_to_end_ms": endToEnd, "http_latency_budget_met": latencyBudgetMet, "achieved_completions_per_minute": float64(len(samples)) * 60 / elapsed.Seconds(), "failures": failures, "max_sampled_lock_waiters": maxLocks, "wait_monitor_samples": monitorSamples, "wait_monitor_errors": monitorErrors, "outcomes": outcomes, "max_sampled_active_connections": maxActive, "backfill_done": done, "samples": samples, "note": "60 readers; 96 authors; 2000 warm technical vectors + 2000 background posts; sample p99 is descriptive, not a sustained SLA"}
+	countDoneBackfill()
+	doneDuringLoad := done
+	var backfillDrain time.Duration
+	if withMixed && readerCount == 500 && mode != "off" && done < 2000 {
+		drainStart := time.Now()
+		for done < 2000 && time.Since(drainStart) < 2*time.Minute {
+			time.Sleep(time.Second)
+			countDoneBackfill()
+		}
+		backfillDrain = time.Since(drainStart)
+		if done != 2000 {
+			t.Errorf("backfill did not recover after the HTTP burst: %d/2000", done)
+		}
+	}
+	report := map[string]any{"mode": mode, "label": label, "readers": readerCount, "cold_fallback_http_ms": summarizeFeedTiming(fallbackMS), "target_per_minute": rate, "duration_seconds": seconds, "page_size": pageSize, "elapsed_seconds": elapsed.Seconds(), "arrivals": count, "completed": len(samples), "admission_dropped": dropped, "admission_ms": summarizeFeedTiming(admission), "http_ms": aggregates, "scheduled_end_to_end_ms": endToEnd, "http_latency_budget_met": latencyBudgetMet, "achieved_completions_per_minute": float64(len(samples)) * 60 / elapsed.Seconds(), "failures": failures, "max_sampled_lock_waiters": maxLocks, "wait_monitor_samples": monitorSamples, "wait_monitor_errors": monitorErrors, "outcomes": outcomes, "max_sampled_active_connections": maxActive, "backfill_done": done, "samples": samples, "note": "96 authors; 2000 warm technical vectors + 2000 background posts; sample p99 is descriptive, not a sustained SLA"}
 	report["export_enabled"], report["export_http_overlap_ms"], report["exported_facts"] = withExport, summarizeFeedTiming(captureTimes), exported
-	report["scroll_enabled"] = withScroll
+	report["scroll_enabled"], report["mixed_enabled"] = withScroll, withMixed
+	report["backfill_done_during_load"], report["backfill_drain_seconds"] = doneDuringLoad, backfillDrain.Seconds()
 	if withExport {
 		t.Logf("dataset captures=%d facts=%d p95=%.2fms", len(captureTimes), exported, summarizeFeedTiming(captureTimes).P95)
 	}
@@ -497,11 +571,14 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("cold fallback HTTP ms n=%d p95=%.2f p99=%.2f", len(fallbackMS), summarizeFeedTiming(fallbackMS).P95, summarizeFeedTiming(fallbackMS).P99)
-	for _, name := range names {
+	for _, name := range measuredRPCs {
 		summary := aggregates[name]
 		t.Logf("%s %s n=%d HTTP ms p50=%.2f p95=%.2f p99=%.2f max=%.2f", mode, name, summary.Count, summary.P50, summary.P95, summary.P99, summary.Max)
 	}
 	t.Logf("rate=%d/min completed=%d/%d elapsed=%s admission_drops=%d admission_p99_ms=%.2f lock_waiters_max=%d active_max=%d backfill_done=%d", rate, len(samples), count, elapsed, dropped, summarizeFeedTiming(admission).P99, maxLocks, maxActive, done)
+	if backfillDrain > 0 {
+		t.Logf("backfill during HTTP load=%d after drain=%d recovery=%s", doneDuringLoad, done, backfillDrain)
+	}
 	if monitorSamples == 0 || monitorErrors != 0 {
 		t.Error("database wait sampling incomplete")
 	}
@@ -528,8 +605,11 @@ func TestSupabaseLocalFeedPerformance(t *testing.T) {
 			if deep.Count == 0 || deep.P95 > 300 || deep.P99 > 800 {
 				t.Errorf("archive pages missed minimum-tier HTTP latency budget: %+v", deep)
 			}
-			t.Logf("archive HTTP ms n=%d p95=%.2f p99=%.2f", deep.Count, deep.P95, deep.P99)
 		}
+	}
+	if withScroll {
+		deep := aggregates[names[0]+"/deep"]
+		t.Logf("archive HTTP ms n=%d p95=%.2f p99=%.2f", deep.Count, deep.P95, deep.P99)
 	}
 	if mode != "off" && done == 0 {
 		t.Error("background worker made no indexing progress")
@@ -568,7 +648,9 @@ func checkBenchmarkScroll(body []byte, kind string, pageSize int, first, deep *s
 			}
 		}
 	case "replay":
-		if !slices.Equal(page.Items, first.Items) || page.Next != first.Next {
+		if !slices.EqualFunc(page.Items, first.Items, func(current, previous scrollItem) bool {
+			return current.Position == previous.Position && current.Post.ID == previous.Post.ID && current.Receipt == previous.Receipt && current.Model == previous.Model
+		}) || page.Next != first.Next {
 			return "scroll replay changed items or receipts"
 		}
 	}

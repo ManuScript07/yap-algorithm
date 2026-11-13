@@ -259,6 +259,18 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 		sbExec(t, p, "delete from media.workers where expires_at<=statement_timestamp()")
 		assertMediaAccounting(t, p)
 	})
+	peer := ids[126]
+	chats := createLoadChats(t, p, ids[128:], peer)
+	sbExec(t, p, `insert into public.user_locations(user_id,latitude,longitude,updated_at)
+		select unnest($1::uuid[]),55,37,statement_timestamp()`, ids[128:])
+	sbExec(t, p, `insert into feed.author_follows(follower_id,author_id,following,version)
+		select unnest($1::uuid[]),$2,true,1`, ids[128:], peer)
+	anchorPost := domain.UUID()
+	sbExec(t, p, `insert into feed.posts(id,author_id,text,audience,language,creation_request,latitude,longitude)
+		values($1,$2,'Synthetic mixed workload discussion','public','en','[]',55,37)`, anchorPost, peer)
+	stage5RPC(t, ids[128], "create_feed_comment", map[string]any{
+		"requested_id": domain.UUID(), "requested_post": anchorPost, "requested_text": "Synthetic root comment",
+	}, 200)
 	// Typical phone images plus occasional 12 MP decodes. All files stay in local
 	// Supabase Storage; byte buffers below are only the load generator's sources.
 	images := [][]byte{mediaImage(t, 640, 480, false), mediaImage(t, 1024, 768, true), mediaImage(t, 4000, 3000, false), mediaImage(t, 4000, 5000, false)}
@@ -276,6 +288,9 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 	var interestLatency []time.Duration
 	var feedMu sync.Mutex
 	var feedLatency []time.Duration
+	readSurfaces := []string{"get_friends_feed", "get_nearby_feed", "get_feed_comments", "get_chat_summaries_by_ids"}
+	readSamples := make(map[string][]float64, len(readSurfaces))
+	var readErrors int
 	stopFeed, stop := context.WithCancel(context.Background())
 	defer stop()
 	var feedWG sync.WaitGroup
@@ -284,14 +299,38 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 		defer feedWG.Done()
 		timer := time.NewTicker(120 * time.Millisecond)
 		defer timer.Stop()
+		scrolls := make([]scrollPage, 16)
 		i := 0
 		for {
 			select {
 			case <-stopFeed.Done():
 				return
 			case <-timer.C:
+				if i%8 == 0 {
+					reader := i / 8 % len(scrolls)
+					surface := readSurfaces[i/8%len(readSurfaces)]
+					args := map[string]any{"requested_limit": 20}
+					switch surface {
+					case "get_feed_comments":
+						args["requested_post"] = anchorPost
+					case "get_chat_summaries_by_ids":
+						args = map[string]any{"conversation_ids": []string{chats[reader]}}
+					}
+					start := time.Now()
+					body, status, err := c.rpc(tokens[128+reader], surface, args)
+					readSamples[surface] = append(readSamples[surface], float64(time.Since(start))/float64(time.Millisecond))
+					if err != nil || status != 200 || (surface == "get_chat_summaries_by_ids" && !bytes.Contains(body, []byte(chats[reader]))) {
+						readErrors++
+					}
+				}
+				reader := i % len(scrolls)
+				previous := scrolls[reader]
+				session, cursor := previous.Session, previous.Next
+				if cursor == "" || i/len(scrolls)%3 == 0 {
+					session, cursor = domain.UUID(), ""
+				}
 				before := time.Now()
-				raw, status, err := c.rpc(tokens[128+i%16], "get_for_you_feed", map[string]any{"requested_limit": 20})
+				raw, status, err := c.rpc(tokens[128+reader], "get_for_you_feed_v2", scrollArgs(session, cursor, 20))
 				if err != nil || status != 200 {
 					feedErrors.Add(1)
 				}
@@ -299,32 +338,26 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 				feedMu.Lock()
 				feedLatency = append(feedLatency, time.Since(before))
 				feedMu.Unlock()
-				if status == 200 && withModel {
-					var page struct {
-						Model string `json:"model"`
-						Items []struct {
-							Delivery string `json:"delivery_id"`
-							Post     struct {
-								Version int64 `json:"action_version"`
-								Liked   bool  `json:"liked"`
-							} `json:"post"`
-						} `json:"items"`
-					}
-					if json.Unmarshal(raw, &page) != nil {
+				if status == 200 {
+					var page scrollPage
+					if json.Unmarshal(raw, &page) != nil || page.Session != session || page.More != (page.Next != "") {
 						feedErrors.Add(1)
+						i++
+						continue
 					}
-					if page.Model == "personalized-v2" {
+					scrolls[reader] = page
+					if len(page.Items) > 0 && page.Items[0].Model == "personalized-v2" {
 						personalized.Add(1)
 					}
-					if i%37 == 0 && len(page.Items) > 0 {
+					if withModel && i%37 == 0 && len(page.Items) > 0 {
 						item := page.Items[0]
 						kind := "like"
 						if item.Post.Liked {
 							kind = "unlike"
 						}
-						actionBody, s, e := c.rpc(tokens[128+i%16], "apply_feed_action", map[string]any{"requested_id": domain.UUID(), "requested_delivery": item.Delivery, "requested_action": kind, "expected_version": item.Post.Version})
+						actionBody, s, e := c.rpc(tokens[128+reader], "apply_feed_action", map[string]any{"requested_id": domain.UUID(), "requested_delivery": item.Receipt, "requested_action": kind, "expected_version": item.Post.ActionVersion})
 						if e != nil || s != 200 {
-							if e == nil && soakDeletedAction(ctx, p, ids[128+i%16], item.Delivery, ids[:128], s, actionBody) {
+							if e == nil && soakDeletedAction(ctx, p, ids[128+reader], item.Receipt, ids[:128], s, actionBody) {
 								staleActions.Add(1)
 							} else {
 								actionErrors.Add(1)
@@ -332,7 +365,7 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 						} else {
 							actions.Add(1)
 							var rev int64
-							user := ids[128+i%16]
+							user := ids[128+reader]
 							if p.QueryRow(ctx, "select revision from recsys.user_states where user_id=$1", user).Scan(&rev) == nil {
 								probeMu.Lock()
 								if _, exists := probes[user]; !exists {
@@ -359,6 +392,8 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 	}
 	var pending []*pendingPost
 	var accepted, busy, published, deleted int
+	var expiredScrolls, peakExpiredScrolls, peakRecommendationConnections, peakMediaConnections int
+	var scrollCleanupObserved bool
 	var completion []time.Duration
 	start := time.Now()
 	// Real one-hour expiry, without changing database timestamps or lease clocks.
@@ -546,7 +581,19 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 			if actual > 2<<30 {
 				t.Fatal("2 GiB live Storage safety budget exceeded")
 			}
-			if err := enc.Encode(map[string]any{"elapsed_seconds": elapsed.Seconds(), "accepted": accepted, "busy": busy, "published": published, "deleted": deleted, "source_bytes": sourceBytes.Load(), "storage_bytes": actual, "feed_requests": feedCount.Load(), "feed_errors": feedErrors.Load(), "action_errors": actionErrors.Load(), "expected_deleted_actions": staleActions.Load(), "queue": raw}); err != nil {
+			var expired, recommendationConnections, mediaConnections int
+			if err := p.QueryRow(ctx, `select
+				(select count(*) from recsys.feed_scrolls where user_id=any($1::uuid[]) and expires_at<=statement_timestamp()),
+				count(*) filter(where usename='yap_recsys_local_worker'), count(*) filter(where usename='yap_media_local_worker')
+				from pg_stat_activity`, ids[128:]).Scan(&expired, &recommendationConnections, &mediaConnections); err != nil {
+				t.Fatal(err)
+			}
+			scrollCleanupObserved = scrollCleanupObserved || expired < expiredScrolls
+			expiredScrolls, peakExpiredScrolls = expired, max(peakExpiredScrolls, expired)
+			peakRecommendationConnections = max(peakRecommendationConnections, recommendationConnections)
+			peakMediaConnections = max(peakMediaConnections, mediaConnections)
+			if err := enc.Encode(map[string]any{"elapsed_seconds": elapsed.Seconds(), "accepted": accepted, "busy": busy, "published": published, "deleted": deleted, "source_bytes": sourceBytes.Load(), "storage_bytes": actual, "feed_requests": feedCount.Load(), "feed_errors": feedErrors.Load(), "action_errors": actionErrors.Load(), "expected_deleted_actions": staleActions.Load(), "queue": raw,
+				"expired_scrolls": expired, "recommendation_connections": recommendationConnections, "media_connections": mediaConnections}); err != nil {
 				t.Fatal(err)
 			}
 			t.Logf("wall=%s accepted=%d busy=%d published=%d pending=%d Storage=%d bytes feed=%d errors=%d", elapsed.Round(time.Second), accepted, busy, published, len(pending), actual, feedCount.Load(), feedErrors.Load())
@@ -617,10 +664,17 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 	if feedErrors.Load() != 0 {
 		t.Errorf("feed RPC errors during mixed load: %d", feedErrors.Load())
 	}
+	if readErrors != 0 {
+		t.Errorf("chat, comments or social-feed errors during mixed load: %d", readErrors)
+	}
 	if minutes >= 60 {
 		raw, s, e := c.rpc(tokens[127], "confirm_feed_photo", map[string]any{"requested_photo": expiringPhoto})
 		if e != nil || s != 410 || !bytes.Contains(raw, []byte("photo_reservation_expired")) {
 			t.Fatalf("real one-hour expiry: %d %s", s, raw)
+		}
+		if !scrollCleanupObserved || peakExpiredScrolls > 1000 || peakRecommendationConnections > 4 || peakMediaConnections > 4 {
+			t.Errorf("maintenance or connection budget exceeded: cleanup=%t peak_expired=%d recommendation=%d media=%d",
+				scrollCleanupObserved, peakExpiredScrolls, peakRecommendationConnections, peakMediaConnections)
 		}
 	}
 	if withModel && (personalized.Load() == 0 || actions.Load() == 0 || actionErrors.Load() != 0 || len(interestLatency) == 0) {
@@ -633,16 +687,35 @@ func TestSupabaseLocalMediaSoak(t *testing.T) {
 	feedMu.Lock()
 	sort.Slice(feedLatency, func(i, j int) bool { return feedLatency[i] < feedLatency[j] })
 	feedP95 := feedLatency[(len(feedLatency)-1)*95/100]
+	feedP99 := feedLatency[(len(feedLatency)-1)*99/100]
 	feedMu.Unlock()
+	if minutes >= 60 && (feedP95 > 300*time.Millisecond || feedP99 > 800*time.Millisecond) {
+		t.Errorf("soak For You page latency exceeded budget: p95=%s p99=%s", feedP95, feedP99)
+	}
 	summary := map[string]any{"wall_seconds": time.Since(start).Seconds(), "requested_minutes": minutes, "accepted_photos": accepted, "published_posts": published, "admission_busy": busy, "feed_requests": feedCount.Load(), "feed_errors": feedErrors.Load(), "feed_p95_ms": float64(feedP95.Microseconds()) / 1000, "publish_p95_ms": float64(completion[(len(completion)-1)*95/100].Microseconds()) / 1000, "source_bytes": sourceBytes.Load(), "hour_soak": minutes >= 60}
+	summary["feed_p99_ms"] = float64(feedP99.Microseconds()) / 1000
+	secondary := make(map[string]feedPerfSummary, len(readSurfaces))
+	for _, surface := range readSurfaces {
+		secondary[surface] = summarizeFeedTiming(readSamples[surface])
+	}
+	summary["secondary_http_ms"] = secondary
+	summary["secondary_errors"] = readErrors
+	summary["scroll_cleanup_observed"] = scrollCleanupObserved
+	summary["peak_expired_scrolls"] = peakExpiredScrolls
+	summary["peak_recommendation_connections"] = peakRecommendationConnections
+	summary["peak_media_connections"] = peakMediaConnections
 	summary["personalized_pages"] = personalized.Load()
 	summary["actions"] = actions.Load()
 	summary["action_errors"] = actionErrors.Load()
 	summary["expected_deleted_actions"] = staleActions.Load()
 	if len(interestLatency) > 0 {
 		sort.Slice(interestLatency, func(i, j int) bool { return interestLatency[i] < interestLatency[j] })
-		summary["interest_p95_ms"] = float64(interestLatency[(len(interestLatency)-1)*95/100].Microseconds()) / 1000
+		interestP95 := interestLatency[(len(interestLatency)-1)*95/100]
+		summary["interest_p95_ms"] = float64(interestP95.Microseconds()) / 1000
 		summary["interest_probes"] = len(interestLatency)
+		if minutes >= 60 && interestP95 > 30*time.Second {
+			t.Errorf("feedback p95 exceeded the 30 second budget: %s", interestP95)
+		}
 	}
 	b, _ := json.MarshalIndent(summary, "", "  ")
 	if err := os.WriteFile(filepath.Join(output, "summary.json"), b, 0600); err != nil {

@@ -43,11 +43,11 @@ func capacityAdmin(t *testing.T) *pgxpool.Pool {
 	if os.Getenv("YAP_SUPABASE_MEDIA_TEST") != "1" {
 		t.Skip("enable -WithMedia")
 	}
-	if os.Getenv("YAP_SUPABASE_LOCAL_URL") != "http://127.0.0.1:54321" {
+	if os.Getenv("YAP_SUPABASE_LOCAL_URL") != localSupabaseTarget(t).apiURL {
 		t.Fatal("local Supabase required")
 	}
 	cfg, err := pgxpool.ParseConfig(os.Getenv("YAP_SUPABASE_LOCAL_ADMIN_DSN"))
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" || cfg.ConnConfig.Port != 54322 {
+	if err != nil || !localSupabaseTarget(t).acceptsPool(cfg) {
 		t.Fatal("explicit local database required")
 	}
 	cfg.MaxConns = 16
